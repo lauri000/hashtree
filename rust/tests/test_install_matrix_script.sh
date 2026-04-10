@@ -14,8 +14,11 @@ trap cleanup EXIT
 BIN_DIR="${TMPDIR}/bin"
 LOG_FILE="${TMPDIR}/calls.log"
 TEST_HOME="${TMPDIR}/home"
+TEST_BREW_REPO="${TMPDIR}/homebrew-repo"
+TEST_BREW_STATE="${TMPDIR}/brew-version"
 mkdir -p "$BIN_DIR"
 mkdir -p "$TEST_HOME"
+mkdir -p "$TEST_BREW_REPO"
 
 cat >"${BIN_DIR}/uname" <<'EOF'
 #!/bin/bash
@@ -68,8 +71,14 @@ chmod +x "${BIN_DIR}/fake-install"
 cat >"${BIN_DIR}/git" <<'EOF'
 #!/bin/bash
 set -euo pipefail
+if [ "${1:-}" = "-C" ]; then
+    shift 2
+fi
 if [ "${1:-}" = "ls-remote" ]; then
     printf '0123456789abcdef0123456789abcdef01234567\tHEAD\n'
+    exit 0
+fi
+if [ "${1:-}" = "fetch" ] || [ "${1:-}" = "reset" ]; then
     exit 0
 fi
 exit 1
@@ -116,16 +125,41 @@ cat >"${BIN_DIR}/brew" <<'EOF'
 set -euo pipefail
 printf 'brew:%s\n' "$*" >>"${TEST_LOG_FILE}"
 case "${1:-}" in
+    --repo)
+        printf '%s\n' "${TEST_BREW_REPO}"
+        exit 0
+        ;;
     tap)
+        mkdir -p "${TEST_BREW_REPO}/Formula"
+        cat >"${TEST_BREW_REPO}/Formula/htree.rb" <<'FORMULA'
+class Htree < Formula
+  version "0.2.32"
+end
+FORMULA
         if [ $# -eq 1 ]; then
+            printf 'sirius/hashtree\n'
             exit 0
         fi
         exit 0
         ;;
     list)
+        if [ -f "${TEST_BREW_STATE}" ]; then
+            printf 'htree %s\n' "$(cat "${TEST_BREW_STATE}")"
+            exit 0
+        fi
         exit 1
         ;;
-    install|test|info|uninstall|untap)
+    install|reinstall)
+        version="$(sed -n 's/^  version "\([^"]*\)".*/\1/p' "${TEST_BREW_REPO}/Formula/htree.rb" | head -n1)"
+        printf '%s\n' "${version:-0.2.32}" >"${TEST_BREW_STATE}"
+        exit 0
+        ;;
+    test|info|uninstall)
+        exit 0
+        ;;
+    untap)
+        rm -rf "${TEST_BREW_REPO}"
+        rm -f "${TEST_BREW_STATE}"
         exit 0
         ;;
 esac
@@ -164,7 +198,7 @@ chmod +x "${BIN_DIR}/prlctl"
 
 OUTPUT_FILE="${TMPDIR}/matrix.out"
 set +e
-PATH="${BIN_DIR}:/usr/bin:/bin" HOME="${TEST_HOME}" TEST_LOG_FILE="${LOG_FILE}" \
+PATH="${BIN_DIR}:/usr/bin:/bin" HOME="${TEST_HOME}" TEST_LOG_FILE="${LOG_FILE}" TEST_BREW_REPO="${TEST_BREW_REPO}" TEST_BREW_STATE="${TEST_BREW_STATE}" \
     "${RUN_SCRIPT}" \
     --install-cmd "fake-install" \
     --windows-zip-url "https://example.test/hashtree.zip" \
@@ -185,7 +219,8 @@ grep -F "Summary: 4 passed, 1 failed, 0 skipped" "${OUTPUT_FILE}" >/dev/null
 
 grep -F "docker:run --rm --platform linux/arm64 alpine:3.22 true" "${LOG_FILE}" >/dev/null
 grep -F "docker:run --rm --platform linux/amd64 alpine:3.22 true" "${LOG_FILE}" >/dev/null
-grep -F "brew:install htree" "${LOG_FILE}" >/dev/null
+grep -F "brew:--repo sirius/hashtree" "${LOG_FILE}" >/dev/null
+grep -F "brew:test htree" "${LOG_FILE}" >/dev/null
 grep -F "prlctl:list -a" "${LOG_FILE}" >/dev/null
 grep -F "prlctl:exec Windows 11 --current-user cmd.exe /c start" "${LOG_FILE}" >/dev/null
 

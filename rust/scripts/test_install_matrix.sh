@@ -578,7 +578,7 @@ EOF
 
 run_brew_smoke() {
     local label="homebrew-host"
-    local had_tap=0 had_formula=0 output log_path
+    local had_tap=0 had_formula=0 output log_path tap_repo formula_path formula_version installed_version
 
     if ! command -v brew >/dev/null 2>&1; then
         record_result "$label" "SKIP" "brew not available"
@@ -608,8 +608,37 @@ run_brew_smoke() {
         fi
     fi
 
-    if HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew list --versions "$BREW_FORMULA" >/dev/null 2>&1; then
+    tap_repo="$(HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew --repo "$BREW_TAP_NAME" 2>>"$log_path" || true)"
+    if [ -z "$tap_repo" ] || [ ! -d "$tap_repo" ]; then
+        record_result "$label" "FAIL" "$(failure_note_from_log "$log_path")"
+        return 0
+    fi
+    if ! git -C "$tap_repo" fetch origin >>"$log_path" 2>&1; then
+        record_result "$label" "FAIL" "$(failure_note_from_log "$log_path")"
+        return 0
+    fi
+    if ! git -C "$tap_repo" reset --hard origin/master >>"$log_path" 2>&1; then
+        record_result "$label" "FAIL" "$(failure_note_from_log "$log_path")"
+        return 0
+    fi
+
+    formula_path="${tap_repo}/Formula/${BREW_FORMULA}.rb"
+    if [ ! -f "$formula_path" ]; then
+        record_result "$label" "FAIL" "missing formula at ${formula_path}"
+        return 0
+    fi
+    formula_version="$(sed -n 's/^  version "\([^"]*\)".*/\1/p' "$formula_path" | head -n1)"
+    if [ -z "$formula_version" ]; then
+        record_result "$label" "FAIL" "could not read ${BREW_FORMULA} version from ${formula_path}"
+        return 0
+    fi
+    installed_version=""
+
+    if output="$(
+        HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew list --versions "$BREW_FORMULA"
+    2>&1)"; then
         had_formula=1
+        installed_version="$(printf '%s\n' "$output" | awk 'NR==1 {print $2}')"
     else
         had_formula=0
         if ! HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install "$BREW_FORMULA" >"$log_path" 2>&1; then
@@ -621,12 +650,19 @@ run_brew_smoke() {
         fi
     fi
 
+    if [ "$had_formula" -eq 1 ] && [ -n "$installed_version" ] && [ "$installed_version" != "$formula_version" ]; then
+        if ! HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew reinstall "$BREW_FORMULA" >"$log_path" 2>&1; then
+            record_result "$label" "FAIL" "$(failure_note_from_log "$log_path")"
+            return 0
+        fi
+    fi
+
     if (
         HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew test "$BREW_FORMULA" &&
             HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew info "$BREW_FORMULA" >/dev/null &&
             HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew info hashtree >/dev/null
     ) >"$log_path" 2>&1; then
-        record_result "$label" "PASS" "brew install/test/info succeeded for ${BREW_FORMULA}"
+        record_result "$label" "PASS" "brew install/test/info succeeded for ${BREW_FORMULA} ${formula_version}"
     else
         record_result "$label" "FAIL" "$(failure_note_from_log "$log_path")"
     fi
