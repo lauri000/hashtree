@@ -26,6 +26,13 @@ pub const DEFAULT_RELAYS: &[&str] = &[
     "wss://upload.iris.to/nostr",
 ];
 
+/// Default social graph entrypoint followed when a new identity is initialized.
+pub const DEFAULT_SOCIALGRAPH_ENTRYPOINT_NPUB: &str =
+    "npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm";
+
+/// Default read-only alias for the social graph entrypoint.
+pub const DEFAULT_SOCIALGRAPH_ENTRYPOINT_ALIAS: &str = "siriusbusiness";
+
 /// Top-level config structure
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -142,6 +149,8 @@ pub struct NostrConfig {
     pub allowed_npubs: Vec<String>,
     #[serde(default)]
     pub socialgraph_root: Option<String>,
+    #[serde(default = "default_nostr_bootstrap_follows")]
+    pub bootstrap_follows: Vec<String>,
     #[serde(default = "default_social_graph_crawl_depth", alias = "crawl_depth")]
     pub social_graph_crawl_depth: u32,
     #[serde(default = "default_max_write_distance")]
@@ -176,6 +185,7 @@ impl Default for NostrConfig {
             relays: default_relays(),
             allowed_npubs: vec![],
             socialgraph_root: None,
+            bootstrap_follows: default_nostr_bootstrap_follows(),
             social_graph_crawl_depth: default_social_graph_crawl_depth(),
             max_write_distance: default_max_write_distance(),
             db_max_size_gb: default_nostr_db_max_size_gb(),
@@ -191,6 +201,10 @@ impl Default for NostrConfig {
 
 fn default_social_graph_crawl_depth() -> u32 {
     2
+}
+
+fn default_nostr_bootstrap_follows() -> Vec<String> {
+    vec![DEFAULT_SOCIALGRAPH_ENTRYPOINT_NPUB.to_string()]
 }
 
 fn default_nostr_overmute_threshold() -> f64 {
@@ -904,6 +918,10 @@ nsec1ghi789
         assert_eq!(config.social_graph_crawl_depth, 2);
         assert_eq!(config.max_write_distance, 3);
         assert!(config.socialgraph_root.is_none());
+        assert_eq!(
+            config.bootstrap_follows,
+            vec![DEFAULT_SOCIALGRAPH_ENTRYPOINT_NPUB.to_string()]
+        );
         assert!(!config.negentropy_only);
         assert_eq!(config.overmute_threshold, 1.0);
         assert_eq!(config.mirror_kinds, vec![0, 3]);
@@ -917,6 +935,7 @@ nsec1ghi789
             r#"
 relays = ["wss://relay.example"]
 socialgraph_root = "npub1test"
+bootstrap_follows = []
 social_graph_crawl_depth = 6
 max_write_distance = 7
 negentropy_only = true
@@ -930,6 +949,7 @@ history_sync_on_reconnect = false
 
         assert_eq!(config.relays, vec!["wss://relay.example".to_string()]);
         assert_eq!(config.socialgraph_root.as_deref(), Some("npub1test"));
+        assert!(config.bootstrap_follows.is_empty());
         assert_eq!(config.social_graph_crawl_depth, 6);
         assert_eq!(config.max_write_distance, 7);
         assert!(config.negentropy_only);

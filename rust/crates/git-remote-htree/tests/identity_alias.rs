@@ -40,8 +40,17 @@ fn test_resolve_identity_petname_from_npub_alias() {
 
     assert_eq!(pubkey, expected);
     assert!(secret.is_none(), "npub aliases should stay read-only");
+    let aliases_path = config_dir.join("aliases");
     assert!(
-        config_dir.join("aliases").exists(),
+        aliases_path.exists(),
         "aliases hint file should be created alongside keys"
     );
+    let aliases = std::fs::read_to_string(&aliases_path).expect("read aliases file");
+    assert!(aliases.contains(&format!(
+        "{} {}",
+        hashtree_config::DEFAULT_SOCIALGRAPH_ENTRYPOINT_NPUB,
+        hashtree_config::DEFAULT_SOCIALGRAPH_ENTRYPOINT_ALIAS
+    )));
+    assert!(!aliases
+        .contains("# npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm sirius"));
 }

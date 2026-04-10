@@ -125,13 +125,13 @@ nsec1abc123... work
 
 # Optional: configure read-only aliases in ~/.hashtree/aliases
 # Format: <npub or pubkey hex> [petname]
-npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm sirius
+npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm siriusbusiness
 
 # Use
 git remote add origin htree://work/myproject
 git push origin main
 git clone htree://npub1.../repo-name
-git clone htree://sirius/repo-name
+git clone htree://siriusbusiness/repo-name
 
 # Link-visible repo (encrypted, shareable via secret URL)
 git remote add origin htree://self/myrepo#link-visible
@@ -170,6 +170,9 @@ relays = [
     "wss://relay.snort.social",
     "wss://relay.primal.net"
 ]
+bootstrap_follows = [
+    "npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm"
+] # local-only seed for new identities; set to [] to opt out
 ```
 
 Keys file: `~/.hashtree/keys`
@@ -182,10 +185,12 @@ nsec1xyz789... work
 Aliases file: `~/.hashtree/aliases`
 
 ```
-npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm sirius
+npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm siriusbusiness
 ```
 
-`git-remote-htree` auto-creates `~/.hashtree/aliases` with a commented example when the config directory exists. Public aliases in `~/.hashtree/keys` are still accepted for compatibility, but `aliases` is the preferred place for read-only identities.
+New identities seed `contacts.json` locally with the `bootstrap_follows` list so the social graph starts with an entrypoint follow. This is local-only and does not publish a contact list event by itself.
+
+`git-remote-htree` auto-creates `~/.hashtree/aliases` with the default `siriusbusiness` entry when the config directory exists. Public aliases in `~/.hashtree/keys` are still accepted for compatibility, but `aliases` is the preferred place for read-only identities.
 
 ## CLI
 

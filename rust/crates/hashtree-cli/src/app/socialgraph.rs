@@ -10,7 +10,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hashtree_cli::config::ensure_keys;
-use hashtree_cli::socialgraph::{SocialGraphBackend, SocialGraphCrawler};
+use hashtree_cli::socialgraph::{
+    sync_local_list_files_force, SocialGraphBackend, SocialGraphCrawler,
+};
 
 const SOCIALGRAPH_SYNC_CURSOR_FILE: &str = "socialgraph-last-sync.txt";
 
@@ -58,6 +60,8 @@ fn init_socialgraph(
     .context("Failed to initialize social graph store")?;
     graph_store.set_profile_index_overmute_threshold(config.nostr.overmute_threshold);
     hashtree_cli::socialgraph::set_social_graph_root(&graph_store, &social_graph_root_bytes);
+    sync_local_list_files_force(graph_store.as_ref(), data_dir, &keys)
+        .context("Failed to sync local social graph lists")?;
 
     Ok((graph_store, social_graph_root_bytes))
 }
@@ -102,6 +106,8 @@ fn init_socialgraph_with_shared_storage(
     .context("Failed to initialize shared social graph store")?;
     graph_store.set_profile_index_overmute_threshold(config.nostr.overmute_threshold);
     hashtree_cli::socialgraph::set_social_graph_root(&graph_store, &social_graph_root_bytes);
+    sync_local_list_files_force(graph_store.as_ref(), data_dir, &keys)
+        .context("Failed to sync local social graph lists")?;
 
     Ok((graph_store, social_graph_root_bytes))
 }

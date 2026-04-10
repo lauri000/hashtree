@@ -496,6 +496,8 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         pk_bytes
     };
     socialgraph::set_social_graph_root(&graph_store, &social_graph_root_bytes);
+    socialgraph::sync_local_list_files_force(graph_store.as_ref(), &opts.data_dir, &keys)
+        .context("Failed to sync local social graph lists")?;
     let social_graph_store: Arc<dyn socialgraph::SocialGraphBackend> = graph_store.clone();
 
     let social_graph = Arc::new(socialgraph::SocialGraphAccessControl::new(

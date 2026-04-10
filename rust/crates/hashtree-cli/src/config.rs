@@ -127,6 +127,10 @@ pub struct NostrConfig {
     /// Social graph root pubkey (npub). Defaults to own key if not set.
     #[serde(default)]
     pub socialgraph_root: Option<String>,
+    /// Pubkeys to seed into contacts.json when a new identity is initialized.
+    /// Set to [] to opt out.
+    #[serde(default = "default_nostr_bootstrap_follows")]
+    pub bootstrap_follows: Vec<String>,
     /// How many hops to crawl the social graph (default: 2)
     #[serde(default = "default_social_graph_crawl_depth", alias = "crawl_depth")]
     pub social_graph_crawl_depth: u32,
@@ -391,6 +395,10 @@ fn default_social_graph_crawl_depth() -> u32 {
     2
 }
 
+fn default_nostr_bootstrap_follows() -> Vec<String> {
+    vec![hashtree_config::DEFAULT_SOCIALGRAPH_ENTRYPOINT_NPUB.to_string()]
+}
+
 fn default_max_write_distance() -> u32 {
     3
 }
@@ -525,6 +533,7 @@ impl Default for NostrConfig {
             relays: default_relays(),
             allowed_npubs: Vec::new(),
             socialgraph_root: None,
+            bootstrap_follows: default_nostr_bootstrap_follows(),
             social_graph_crawl_depth: default_social_graph_crawl_depth(),
             max_write_distance: default_max_write_distance(),
             db_max_size_gb: default_nostr_db_max_size_gb(),
@@ -708,6 +717,11 @@ pub fn generate_keys() -> Result<Keys> {
         fs::set_permissions(&keys_path, perms)?;
     }
 
+    if let Ok(config) = Config::load() {
+        let data_dir = std::path::PathBuf::from(&config.storage.data_dir);
+        let _ = crate::bootstrap::seed_identity_defaults(&data_dir, &config);
+    }
+
     Ok(keys)
 }
 
@@ -798,6 +812,10 @@ mod tests {
         assert_eq!(config.nostr.history_sync_author_chunk_size, 5_000);
         assert!(config.nostr.history_sync_on_reconnect);
         assert!(config.nostr.socialgraph_root.is_none());
+        assert_eq!(
+            config.nostr.bootstrap_follows,
+            vec![hashtree_config::DEFAULT_SOCIALGRAPH_ENTRYPOINT_NPUB.to_string()]
+        );
         assert!(!config.server.socialgraph_snapshot_public);
         assert!(config.cashu.accepted_mints.is_empty());
         assert!(config.cashu.default_mint.is_none());
@@ -832,6 +850,10 @@ relays = ["wss://relay.damus.io"]
         assert_eq!(config.nostr.history_sync_author_chunk_size, 5_000);
         assert!(config.nostr.history_sync_on_reconnect);
         assert!(config.nostr.socialgraph_root.is_none());
+        assert_eq!(
+            config.nostr.bootstrap_follows,
+            vec![hashtree_config::DEFAULT_SOCIALGRAPH_ENTRYPOINT_NPUB.to_string()]
+        );
     }
 
     #[test]
@@ -840,6 +862,7 @@ relays = ["wss://relay.damus.io"]
 [nostr]
 relays = ["wss://relay.damus.io"]
 socialgraph_root = "npub1test"
+bootstrap_follows = []
 social_graph_crawl_depth = 3
 max_write_distance = 5
 negentropy_only = true
@@ -851,6 +874,7 @@ history_sync_on_reconnect = false
         let config: Config = toml::from_str(toml_str).unwrap();
         assert!(config.nostr.enabled);
         assert_eq!(config.nostr.socialgraph_root, Some("npub1test".to_string()));
+        assert!(config.nostr.bootstrap_follows.is_empty());
         assert_eq!(config.nostr.social_graph_crawl_depth, 3);
         assert_eq!(config.nostr.max_write_distance, 5);
         assert_eq!(config.nostr.db_max_size_gb, 10);

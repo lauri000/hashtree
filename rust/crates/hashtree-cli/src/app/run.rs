@@ -244,6 +244,12 @@ pub(crate) async fn run() -> Result<()> {
                 &graph_store,
                 &social_graph_root_bytes,
             );
+            hashtree_cli::socialgraph::sync_local_list_files_force(
+                graph_store.as_ref(),
+                &data_dir,
+                &keys,
+            )
+            .context("Failed to sync local social graph lists")?;
             let social_graph_store: Arc<dyn hashtree_cli::socialgraph::SocialGraphBackend> =
                 graph_store.clone();
 

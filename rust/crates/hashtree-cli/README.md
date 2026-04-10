@@ -73,6 +73,8 @@ The daemon maintains a local social graph store. On startup it crawls follow lis
 
 The social graph API is available at `/api/socialgraph/distance/:pubkey`.
 
+New identities also seed a local bootstrap follow to `npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm` so the graph starts with a usable entrypoint. This writes `contacts.json` locally and is not auto-published.
+
 ## Configuration
 
 Config file: `~/.hashtree/config.toml`
@@ -85,6 +87,9 @@ write_servers = ["https://hashtree.iris.to"]
 [nostr]
 relays = ["wss://relay.damus.io", "wss://relay.snort.social"]
 socialgraph_root = "npub1..."         # defaults to own key
+bootstrap_follows = [
+  "npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm"
+]                                   # local-only seed for new identities; set to [] to opt out
 social_graph_crawl_depth = 2          # BFS depth for social graph crawl
 max_write_distance = 3                # max follow distance for write access
 negentropy_only = false         # require NIP-77 relays for mirror history sync
@@ -96,6 +101,12 @@ Keys file: `~/.hashtree/keys`
 ```
 nsec1abc123... default
 nsec1xyz789... work
+```
+
+Aliases file: `~/.hashtree/aliases`
+
+```
+npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm siriusbusiness
 ```
 
 Part of [hashtree-rs](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree).

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.30 - 2026-04-10
+
+Changes since the `0.2.29` crates.io release.
+
+### Improved
+
+- Bootstrapped new local identities with a default social-graph entrypoint follow, so fresh `htree socialgraph` usage starts from a reachable root instead of an isolated local user. This bootstrap is local-only and can be disabled with `nostr.bootstrap_follows = []`.
+- Seeded the default aliases file with `siriusbusiness` for the binary releaser npub and updated the Rust docs to describe the new alias/bootstrap behavior.
+- Forced local contact-list files into the social-graph state when the CLI starts or opens the graph, so newly seeded follows appear in stats immediately without requiring a separate publish step.
+
 ## 0.2.29 - 2026-04-10
 
 Changes since the `0.2.28` crates.io release.

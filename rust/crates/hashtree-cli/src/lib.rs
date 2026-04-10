@@ -1,3 +1,4 @@
+pub mod bootstrap;
 #[cfg(feature = "cashu")]
 pub mod cashu;
 #[cfg(feature = "cashu")]

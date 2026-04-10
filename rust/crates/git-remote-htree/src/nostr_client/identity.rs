@@ -84,11 +84,10 @@ fn ensure_aliases_file_hint() {
         return;
     }
 
-    let template = concat!(
-        "# Public read-only aliases for repos you clone or fetch.\n",
-        "# Format: npub1... alias\n",
-        "# Example:\n",
-        "# npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm sirius\n",
+    let template = format!(
+        "# Public read-only aliases for repos you clone or fetch.\n# Format: npub1... alias\n{} {}\n",
+        hashtree_config::DEFAULT_SOCIALGRAPH_ENTRYPOINT_NPUB,
+        hashtree_config::DEFAULT_SOCIALGRAPH_ENTRYPOINT_ALIAS
     );
 
     let _ = std::fs::OpenOptions::new()
