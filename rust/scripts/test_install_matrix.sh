@@ -1,0 +1,535 @@
+#!/bin/bash
+set -uo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: rust/scripts/test_install_matrix.sh [options]
+
+Smoke-test the README-advertised install flows on every platform this machine
+can reach: native host, Docker Linux targets, a running Windows VM, and
+Homebrew on the host when available.
+
+By default the script extracts the canonical install command and Homebrew tap
+from README.md. It prints a per-platform PASS/FAIL/SKIP summary and exits nonzero
+if any attempted platform fails.
+
+Options:
+  --readme <path>                 README to inspect (default: repo README.md)
+  --install-cmd <command>         Override the install command to test
+  --test-remote <htree-url>       Remote used for git/helper smoke checks
+  --platforms <csv>               Subset: host,docker-arm64,docker-amd64,windows,brew
+  --docker-bin <path>             Docker binary to use (default: docker)
+  --docker-image <image>          Debian image used for Linux smoke tests
+  --windows-zip-url <url>         Override the Windows zip asset URL
+  --windows-vm-name <name>        Override the Parallels Windows VM name
+  --brew-tap-name <name>          Override the Homebrew tap name
+  --brew-tap-url <url>            Override the Homebrew tap URL
+  --brew-formula <name>           Override the Homebrew formula name (default: htree)
+  --keep-temp                     Keep temporary work directories for debugging
+  -h, --help                      Show this help
+
+Examples:
+  rust/scripts/test_install_matrix.sh
+  rust/scripts/test_install_matrix.sh --platforms host,docker-arm64
+  rust/scripts/test_install_matrix.sh --install-cmd 'curl -fsSL https://example/install.sh | sh'
+EOF
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUST_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO_ROOT="$(cd "${RUST_DIR}/.." && pwd)"
+
+README_PATH="${REPO_ROOT}/README.md"
+INSTALL_CMD=""
+TEST_REMOTE="htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree"
+PLATFORMS_CSV="host,docker-arm64,docker-amd64,windows,brew"
+DOCKER_BIN="${DOCKER_BIN:-docker}"
+DOCKER_IMAGE="${DOCKER_IMAGE:-debian:bookworm-slim}"
+WINDOWS_ZIP_URL=""
+WINDOWS_VM_NAME=""
+BREW_TAP_NAME=""
+BREW_TAP_URL=""
+BREW_FORMULA="htree"
+KEEP_TEMP=0
+
+RESULT_PLATFORMS=()
+RESULT_STATUSES=()
+RESULT_NOTES=()
+
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hashtree-install-matrix.XXXXXX")"
+
+cleanup() {
+    if [ "$KEEP_TEMP" -eq 0 ] && [ -n "${WORK_DIR:-}" ] && [ -d "$WORK_DIR" ]; then
+        rm -rf "$WORK_DIR"
+    fi
+}
+trap cleanup EXIT
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --readme)
+            README_PATH="${2:-}"
+            shift 2
+            ;;
+        --install-cmd)
+            INSTALL_CMD="${2:-}"
+            shift 2
+            ;;
+        --test-remote)
+            TEST_REMOTE="${2:-}"
+            shift 2
+            ;;
+        --platforms)
+            PLATFORMS_CSV="${2:-}"
+            shift 2
+            ;;
+        --docker-bin)
+            DOCKER_BIN="${2:-}"
+            shift 2
+            ;;
+        --docker-image)
+            DOCKER_IMAGE="${2:-}"
+            shift 2
+            ;;
+        --windows-zip-url)
+            WINDOWS_ZIP_URL="${2:-}"
+            shift 2
+            ;;
+        --windows-vm-name)
+            WINDOWS_VM_NAME="${2:-}"
+            shift 2
+            ;;
+        --brew-tap-name)
+            BREW_TAP_NAME="${2:-}"
+            shift 2
+            ;;
+        --brew-tap-url)
+            BREW_TAP_URL="${2:-}"
+            shift 2
+            ;;
+        --brew-formula)
+            BREW_FORMULA="${2:-}"
+            shift 2
+            ;;
+        --keep-temp)
+            KEEP_TEMP=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
+trim() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s\n' "$value"
+}
+
+truncate_note() {
+    local note
+    note="$(trim "$1")"
+    note="${note//$'\r'/ }"
+    note="${note//$'\n'/; }"
+    while [[ "$note" == *"  "* ]]; do
+        note="${note//  / }"
+    done
+    if [ ${#note} -gt 180 ]; then
+        note="${note:0:177}..."
+    fi
+    printf '%s\n' "$note"
+}
+
+record_result() {
+    local platform="$1"
+    local status="$2"
+    local note="$3"
+    RESULT_PLATFORMS+=("$platform")
+    RESULT_STATUSES+=("$status")
+    RESULT_NOTES+=("$(truncate_note "$note")")
+}
+
+platform_requested() {
+    case ",${PLATFORMS_CSV}," in
+        *",$1,"*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+extract_install_cmd_from_readme() {
+    grep -F 'curl -fsSL https://upload.iris.to/' "$README_PATH" | grep 'install.sh' | head -n1
+}
+
+extract_brew_tap_from_readme() {
+    grep -F 'brew tap ' "$README_PATH" | grep 'homebrew-hashtree.git' | head -n1
+}
+
+extract_install_url_from_cmd() {
+    local cmd="$1"
+    if [[ "$cmd" =~ (https?://[^[:space:]\"\'\|]+install\.sh) ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+    return 1
+}
+
+derive_windows_zip_url() {
+    local install_url install_script base_url
+    if [ -n "$WINDOWS_ZIP_URL" ]; then
+        printf '%s\n' "$WINDOWS_ZIP_URL"
+        return 0
+    fi
+    install_url="$(extract_install_url_from_cmd "$INSTALL_CMD")" || return 1
+    install_script="$(curl -fsSL "$install_url")" || return 1
+    base_url="$(printf '%s\n' "$install_script" | sed -n 's/^BASE_URL="\([^"]*\)".*/\1/p' | head -n1)"
+    if [ -z "$base_url" ]; then
+        return 1
+    fi
+    printf '%s/assets/hashtree-x86_64-pc-windows-msvc.zip\n' "$base_url"
+}
+
+auto_detect_windows_vm_name() {
+    local listing line status name count=0 match=""
+    listing="$(prlctl list -a 2>/dev/null || true)"
+    while IFS= read -r line; do
+        case "$line" in
+            \{*\}\ *)
+                status="$(printf '%s\n' "$line" | awk '{print tolower($2)}')"
+                name="$(printf '%s\n' "$line" | sed -E 's/^\{[^}]+\}[[:space:]]+(running|suspended)[[:space:]]+[^[:space:]]+[[:space:]]+//I')"
+                if [ "$name" = "$line" ]; then
+                    name="$(printf '%s\n' "$line" | sed -E 's/^\{[^}]+\}[[:space:]]+(running|suspended)[[:space:]]+//I')"
+                fi
+                if { [ "$status" = "running" ] || [ "$status" = "suspended" ]; } &&
+                    printf '%s\n' "$name" | grep -qi 'windows'
+                then
+                    count=$((count + 1))
+                    match="$name"
+                fi
+                ;;
+        esac
+    done <<EOF
+$listing
+EOF
+    if [ "$count" -eq 1 ] && [ -n "$match" ]; then
+        printf '%s\n' "$match"
+        return 0
+    fi
+    return 1
+}
+
+docker_platform_available() {
+    "$DOCKER_BIN" run --rm --platform "$1" alpine:3.22 true >/dev/null 2>&1
+}
+
+run_unix_install_smoke() {
+    local install_cmd="$1"
+    local test_remote="$2"
+    local home_dir="$3"
+    local system_path="/usr/bin:/bin:/usr/sbin:/sbin"
+
+    mkdir -p "$home_dir"
+    env HOME="$home_dir" PATH="${system_path}:${PATH:-}" /bin/bash -lc "$install_cmd"
+    env HOME="$home_dir" PATH="$home_dir/.local/bin:${system_path}:${PATH:-}" \
+        /bin/bash -lc '
+            set -euo pipefail
+            test -x "$HOME/.local/bin/htree"
+            test -x "$HOME/.local/bin/htree-cashu"
+            test -x "$HOME/.local/bin/git-remote-htree"
+            "$HOME/.local/bin/htree" --help >/dev/null
+            helper_out="$(printf "capabilities\n" | "$HOME/.local/bin/git-remote-htree" origin "'"$test_remote"'")"
+            printf "%s\n" "$helper_out" | grep -Fx "fetch" >/dev/null
+            printf "%s\n" "$helper_out" | grep -Fx "push" >/dev/null
+            printf "%s\n" "$helper_out" | grep -Fx "option" >/dev/null
+            git ls-remote "'"$test_remote"'" >/dev/null
+        '
+}
+
+run_host_smoke() {
+    local host_os host_arch label home_dir output
+    host_os="$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+    host_arch="$(uname -m 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+    label="host-${host_os}-${host_arch}"
+
+    case "$host_os" in
+        darwin|linux)
+            ;;
+        *)
+            record_result "$label" "SKIP" "shell bootstrap is only supported on macOS/Linux hosts"
+            return 0
+            ;;
+    esac
+
+    home_dir="${WORK_DIR}/${label}-home"
+    if output="$(run_unix_install_smoke "$INSTALL_CMD" "$TEST_REMOTE" "$home_dir" 2>&1)"; then
+        record_result "$label" "PASS" "install command, htree --help, helper capabilities, and git ls-remote succeeded"
+    else
+        record_result "$label" "FAIL" "$output"
+    fi
+}
+
+run_docker_smoke() {
+    local platform="$1"
+    local label="$2"
+    local output
+
+    if ! command -v "$DOCKER_BIN" >/dev/null 2>&1; then
+        record_result "$label" "SKIP" "docker not available"
+        return 0
+    fi
+
+    if ! docker_platform_available "$platform"; then
+        record_result "$label" "SKIP" "${platform} is not runnable via docker on this machine"
+        return 0
+    fi
+
+    if output="$(
+        env INSTALL_CMD="$INSTALL_CMD" TEST_REMOTE="$TEST_REMOTE" \
+            "$DOCKER_BIN" run --rm --platform "$platform" \
+            -e INSTALL_CMD \
+            -e TEST_REMOTE \
+            "$DOCKER_IMAGE" \
+            sh -lc '
+                set -eu
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update >/dev/null
+                apt-get install -y --no-install-recommends bash curl ca-certificates git >/dev/null
+                export HOME=/tmp/hashtree-home
+                mkdir -p "$HOME"
+                /bin/bash -lc "$INSTALL_CMD"
+                PATH="$HOME/.local/bin:/usr/bin:/bin" /bin/bash -lc '"'"'
+                    set -euo pipefail
+                    test -x "$HOME/.local/bin/htree"
+                    test -x "$HOME/.local/bin/htree-cashu"
+                    test -x "$HOME/.local/bin/git-remote-htree"
+                    "$HOME/.local/bin/htree" --help >/dev/null
+                    helper_out="$(printf "capabilities\n" | "$HOME/.local/bin/git-remote-htree" origin "$TEST_REMOTE")"
+                    printf "%s\n" "$helper_out" | grep -Fx "fetch" >/dev/null
+                    printf "%s\n" "$helper_out" | grep -Fx "push" >/dev/null
+                    printf "%s\n" "$helper_out" | grep -Fx "option" >/dev/null
+                    git ls-remote "$TEST_REMOTE" >/dev/null
+                '"'"'
+            ' 2>&1
+    )"; then
+        record_result "$label" "PASS" "install command, htree --help, helper capabilities, and git ls-remote succeeded"
+    else
+        record_result "$label" "FAIL" "$output"
+    fi
+}
+
+powershell_escape() {
+    printf '%s' "$1" | sed "s/'/''/g"
+}
+
+run_windows_smoke() {
+    local vm_name zip_url label output ps_script encoded
+    label="windows-vm-x86_64"
+
+    if [ "$(uname -s 2>/dev/null)" != "Darwin" ]; then
+        record_result "$label" "SKIP" "Parallels Windows VM smoke only runs from macOS"
+        return 0
+    fi
+    if ! command -v prlctl >/dev/null 2>&1; then
+        record_result "$label" "SKIP" "prlctl not available"
+        return 0
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        record_result "$label" "SKIP" "python3 not available for PowerShell encoding"
+        return 0
+    fi
+
+    vm_name="${WINDOWS_VM_NAME:-}"
+    if [ -z "$vm_name" ]; then
+        vm_name="$(auto_detect_windows_vm_name || true)"
+    fi
+    if [ -z "$vm_name" ]; then
+        record_result "$label" "SKIP" "no unique running Windows VM detected"
+        return 0
+    fi
+
+    zip_url="$(derive_windows_zip_url || true)"
+    if [ -z "$zip_url" ]; then
+        record_result "$label" "FAIL" "could not determine the Windows release zip URL"
+        return 0
+    fi
+
+    ps_script=$(cat <<EOF
+\$ErrorActionPreference = 'Stop'
+\$ProgressPreference = 'SilentlyContinue'
+\$remote = '$(powershell_escape "$TEST_REMOTE")'
+\$zipUrl = '$(powershell_escape "$zip_url")'
+\$work = Join-Path \$env:TEMP ('hashtree-install-test-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path \$work | Out-Null
+try {
+  \$zipPath = Join-Path \$work 'hashtree.zip'
+  Invoke-WebRequest -Uri \$zipUrl -OutFile \$zipPath
+  Expand-Archive -Path \$zipPath -DestinationPath \$work
+  \$htree = Get-ChildItem -Path \$work -Recurse -Filter 'htree.exe' | Select-Object -First 1
+  \$helper = Get-ChildItem -Path \$work -Recurse -Filter 'git-remote-htree.exe' | Select-Object -First 1
+  if (-not \$htree) { throw 'htree.exe not found in extracted archive' }
+  if (-not \$helper) { throw 'git-remote-htree.exe not found in extracted archive' }
+  & \$htree.FullName --help | Out-Null
+  \$cap = 'capabilities' | & \$helper.FullName origin \$remote
+  if (\$cap -notcontains 'fetch' -or \$cap -notcontains 'push' -or \$cap -notcontains 'option') {
+    throw 'git-remote-htree.exe did not advertise fetch/push/option'
+  }
+  if (Get-Command git -ErrorAction SilentlyContinue) {
+    \$refs = & git ls-remote \$remote
+    if (-not \$refs) {
+      throw 'git ls-remote returned no refs'
+    }
+  }
+}
+finally {
+  Remove-Item -Path \$work -Recurse -Force -ErrorAction SilentlyContinue
+}
+EOF
+)
+
+    encoded="$(
+        printf '%s' "$ps_script" |
+            python3 -c 'import base64, sys; print(base64.b64encode(sys.stdin.buffer.read().decode("utf-8").encode("utf-16le")).decode("ascii"))'
+    )"
+
+    if output="$(prlctl exec "$vm_name" --current-user powershell.exe -NoProfile -NonInteractive -EncodedCommand "$encoded" 2>&1)"; then
+        record_result "$label" "PASS" "downloaded the Windows zip and verified htree.exe plus git-remote-htree.exe"
+    else
+        record_result "$label" "FAIL" "$output"
+    fi
+}
+
+run_brew_smoke() {
+    local label="homebrew-host"
+    local had_tap=0 had_formula=0 output
+
+    if ! command -v brew >/dev/null 2>&1; then
+        record_result "$label" "SKIP" "brew not available"
+        return 0
+    fi
+
+    if [ -z "$BREW_TAP_NAME" ] || [ -z "$BREW_TAP_URL" ]; then
+        record_result "$label" "FAIL" "could not determine the Homebrew tap from README.md"
+        return 0
+    fi
+
+    if output="$(
+        HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 \
+            brew tap | grep -Fx "$BREW_TAP_NAME" >/dev/null
+    2>&1)"; then
+        had_tap=1
+    else
+        had_tap=0
+    fi
+
+    if [ "$had_tap" -eq 0 ]; then
+        if ! output="$(HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew tap "$BREW_TAP_NAME" "$BREW_TAP_URL" 2>&1)"; then
+            record_result "$label" "FAIL" "$output"
+            return 0
+        fi
+    fi
+
+    if HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew list --versions "$BREW_FORMULA" >/dev/null 2>&1; then
+        had_formula=1
+    else
+        had_formula=0
+        if ! output="$(HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install "$BREW_FORMULA" 2>&1)"; then
+            if [ "$had_tap" -eq 0 ]; then
+                HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew untap "$BREW_TAP_NAME" >/dev/null 2>&1 || true
+            fi
+            record_result "$label" "FAIL" "$output"
+            return 0
+        fi
+    fi
+
+    if output="$(
+        HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew test "$BREW_FORMULA" &&
+            HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew info "$BREW_FORMULA" >/dev/null &&
+            HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew info hashtree >/dev/null
+    2>&1)"; then
+        record_result "$label" "PASS" "brew install/test/info succeeded for ${BREW_FORMULA}"
+    else
+        record_result "$label" "FAIL" "$output"
+    fi
+
+    if [ "$had_formula" -eq 0 ]; then
+        HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew uninstall "$BREW_FORMULA" >/dev/null 2>&1 || true
+    fi
+    if [ "$had_tap" -eq 0 ]; then
+        HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew untap "$BREW_TAP_NAME" >/dev/null 2>&1 || true
+    fi
+}
+
+if [ -z "$INSTALL_CMD" ]; then
+    INSTALL_CMD="$(extract_install_cmd_from_readme)"
+fi
+if [ -z "$INSTALL_CMD" ]; then
+    echo "Failed to extract the canonical install command from ${README_PATH}" >&2
+    exit 1
+fi
+
+if [ -z "$BREW_TAP_NAME" ] || [ -z "$BREW_TAP_URL" ]; then
+    brew_tap_line="$(extract_brew_tap_from_readme)"
+    if [[ "$brew_tap_line" =~ brew[[:space:]]+tap[[:space:]]+([^[:space:]]+)[[:space:]]+(https?://[^[:space:]]+) ]]; then
+        [ -n "$BREW_TAP_NAME" ] || BREW_TAP_NAME="${BASH_REMATCH[1]}"
+        [ -n "$BREW_TAP_URL" ] || BREW_TAP_URL="${BASH_REMATCH[2]}"
+    fi
+fi
+
+if platform_requested host; then
+    run_host_smoke
+fi
+if platform_requested docker-arm64; then
+    run_docker_smoke "linux/arm64" "docker-linux-arm64"
+fi
+if platform_requested docker-amd64; then
+    run_docker_smoke "linux/amd64" "docker-linux-amd64"
+fi
+if platform_requested windows; then
+    run_windows_smoke
+fi
+if platform_requested brew; then
+    run_brew_smoke
+fi
+
+printf '%-8s %-24s %s\n' "STATUS" "PLATFORM" "NOTE"
+printf '%-8s %-24s %s\n' "------" "--------" "----"
+
+pass_count=0
+fail_count=0
+skip_count=0
+
+for i in "${!RESULT_PLATFORMS[@]}"; do
+    printf '%-8s %-24s %s\n' "${RESULT_STATUSES[$i]}" "${RESULT_PLATFORMS[$i]}" "${RESULT_NOTES[$i]}"
+    case "${RESULT_STATUSES[$i]}" in
+        PASS)
+            pass_count=$((pass_count + 1))
+            ;;
+        FAIL)
+            fail_count=$((fail_count + 1))
+            ;;
+        SKIP)
+            skip_count=$((skip_count + 1))
+            ;;
+    esac
+done
+
+printf '\nSummary: %d passed, %d failed, %d skipped\n' "$pass_count" "$fail_count" "$skip_count"
+if [ "$KEEP_TEMP" -eq 1 ]; then
+    printf 'Work dir: %s\n' "$WORK_DIR"
+fi
+
+if [ "$fail_count" -gt 0 ]; then
+    exit 1
+fi
+exit 0
