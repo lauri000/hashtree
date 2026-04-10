@@ -312,15 +312,21 @@ build_target() {
             esac
             ;;
         x86_64-apple-darwin|aarch64-apple-darwin)
+            local host_arch target_arch
             if [ "$(uname -s)" != "Darwin" ]; then
                 echo "Cannot build $target natively on $(uname -s). Use --targets to skip it." >&2
                 exit 1
             fi
             require_command "$CARGO_BIN"
             ensure_rust_target "$target"
+            host_arch="$(uname -m)"
+            target_arch="${target%%-*}"
             (
                 cd "$RUST_DIR"
                 export CARGO_TARGET_DIR="$TARGET_DIR"
+                if [ "$host_arch" != "$target_arch" ]; then
+                    export PKG_CONFIG_ALLOW_CROSS=1
+                fi
                 "$CARGO_BIN" "${cargo_args[@]}"
             )
             ;;

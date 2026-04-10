@@ -31,7 +31,7 @@ cat >"${BIN_DIR}/cargo" <<'EOF'
 #!/bin/bash
 set -euo pipefail
 
-printf 'env:%s\nargs:%s\n' "${CARGO_TARGET_DIR:-}" "$*" >>"${TEST_LOG_DIR}/cargo.log"
+printf 'env:%s\npkg-config-allow-cross:%s\nargs:%s\n' "${CARGO_TARGET_DIR:-}" "${PKG_CONFIG_ALLOW_CROSS:-}" "$*" >>"${TEST_LOG_DIR}/cargo.log"
 printf 'pwd:%s\n' "$PWD" >>"${TEST_LOG_DIR}/cargo.log"
 
 target=""
@@ -92,20 +92,26 @@ PATH="${BIN_DIR}:$PATH" TEST_LOG_DIR="${LOG_DIR}" "${BUILD_SCRIPT}" \
     --repo-dir "${SOURCE_REPO_DIR}" \
     --output-dir "${OUTPUT_DIR}" \
     --target-dir "${TARGET_DIR}" \
-    --targets "aarch64-apple-darwin,x86_64-unknown-linux-musl" \
+    --targets "aarch64-apple-darwin,x86_64-apple-darwin,x86_64-unknown-linux-musl" \
     --linux-builder cross \
     --cargo-bin cargo \
     --cross-bin cross
 
 grep -Fx "target add aarch64-apple-darwin" "${LOG_DIR}/rustup.log" >/dev/null
+grep -Fx "target add x86_64-apple-darwin" "${LOG_DIR}/rustup.log" >/dev/null
 grep -F "env:${TARGET_DIR}" "${LOG_DIR}/cargo.log" >/dev/null
 grep -F "pwd:${SOURCE_REPO_DIR}/rust" "${LOG_DIR}/cargo.log" >/dev/null
 grep -F "args:build --release --target aarch64-apple-darwin -p git-remote-htree -p hashtree-cashu-cli -p hashtree-cli --features hashtree-cli/fuse --locked" "${LOG_DIR}/cargo.log" >/dev/null
+grep -F "args:build --release --target x86_64-apple-darwin -p git-remote-htree -p hashtree-cashu-cli -p hashtree-cli --features hashtree-cli/fuse --locked" "${LOG_DIR}/cargo.log" >/dev/null
+if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+    grep -F "pkg-config-allow-cross:1" "${LOG_DIR}/cargo.log" >/dev/null
+fi
 grep -F "env:${TARGET_DIR}" "${LOG_DIR}/cross.log" >/dev/null
 grep -F "pwd:${SOURCE_REPO_DIR}/rust" "${LOG_DIR}/cross.log" >/dev/null
 grep -F "args:build --release --target x86_64-unknown-linux-musl -p git-remote-htree -p hashtree-cashu-cli -p hashtree-cli --features hashtree-cli/fuse --locked" "${LOG_DIR}/cross.log" >/dev/null
 
 test -f "${OUTPUT_DIR}/hashtree-aarch64-apple-darwin.tar.gz"
+test -f "${OUTPUT_DIR}/hashtree-x86_64-apple-darwin.tar.gz"
 test -f "${OUTPUT_DIR}/hashtree-x86_64-unknown-linux-musl.tar.gz"
 
 echo "test_build_release_invocation.sh passed"
