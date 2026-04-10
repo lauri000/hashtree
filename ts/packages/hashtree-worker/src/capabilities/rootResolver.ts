@@ -12,7 +12,6 @@ const DEFAULT_ROOT_RESOLVE_RELAYS = [
   'wss://relay.nostr.band',
   'wss://relay.snort.social',
   'wss://temp.iris.to',
-  'wss://offchain.pub',
 ];
 
 function withUniqueRelays(relays?: string[]): string[] {

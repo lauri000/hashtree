@@ -54,4 +54,82 @@ describe('BlossomTransport.fetch', () => {
 
     await expect(resultPromise).resolves.toEqual(data);
   });
+
+  it('deduplicates concurrent fetches for the same hash', async () => {
+    const data = new TextEncoder().encode('dedupe-blossom-thumb');
+    const hashHex = toHex(await sha256(data));
+    const base = 'https://fast.example';
+
+    const fetchMock = vi.fn((input: string | URL) => {
+      const url = String(input);
+      if (url !== `${base}/${hashHex}.bin`) {
+        return Promise.resolve({
+          ok: false,
+          arrayBuffer: async () => new ArrayBuffer(0),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        arrayBuffer: async () => data.buffer.slice(0),
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const transport = new BlossomTransport([
+      { url: base, read: true, write: false },
+    ]);
+
+    const first = transport.fetch(hashHex);
+    const second = transport.fetch(hashHex);
+
+    await expect(Promise.all([first, second])).resolves.toEqual([data, data]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('limits concurrent read fetches across hashes', async () => {
+    const base = 'https://throttled.example';
+    const hashes = Array.from({ length: 20 }, (_, index) => `hash-${index}`);
+    const releases: Array<() => void> = [];
+    let active = 0;
+    let maxActive = 0;
+
+    const fetchMock = vi.fn(() => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      return new Promise((resolve) => {
+        releases.push(() => {
+          active -= 1;
+          resolve({
+            ok: false,
+            arrayBuffer: async () => new ArrayBuffer(0),
+          });
+        });
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const transport = new BlossomTransport([
+      { url: base, read: true, write: false },
+    ]);
+
+    const requests = hashes.map((hashHex) => transport.fetch(hashHex));
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fetchMock).toHaveBeenCalledTimes(12);
+    expect(maxActive).toBe(12);
+
+    while (fetchMock.mock.calls.length < hashes.length || active > 0) {
+      const batch = releases.splice(0, releases.length);
+      expect(batch.length).toBeGreaterThan(0);
+      for (const release of batch) {
+        release();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    await expect(Promise.all(requests)).resolves.toEqual(Array(hashes.length).fill(null));
+    expect(maxActive).toBeLessThanOrEqual(12);
+  });
 });

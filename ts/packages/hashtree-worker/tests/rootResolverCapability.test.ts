@@ -78,7 +78,7 @@ describe('rootResolver capability', () => {
     expect(resolvePath).not.toHaveBeenCalled();
     expect(subscribeManyMock).toHaveBeenCalledTimes(1);
     expect(subscribeManyMock).toHaveBeenCalledWith(
-      ['wss://relay.example', 'wss://relay.damus.io', 'wss://relay.primal.net', 'wss://relay.nostr.band', 'wss://relay.snort.social', 'wss://temp.iris.to', 'wss://offchain.pub'],
+      ['wss://relay.example', 'wss://relay.damus.io', 'wss://relay.primal.net', 'wss://relay.nostr.band', 'wss://relay.snort.social', 'wss://temp.iris.to'],
       {
         kinds: [30078],
         authors: [PUBKEY],

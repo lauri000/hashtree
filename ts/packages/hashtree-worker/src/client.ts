@@ -5,6 +5,7 @@ import type {
   BlobSource,
   ConnectivityState,
   RootResolveOptions,
+  WorkerDiagnosticEvent,
   UploadProgressState,
   WorkerConfig,
   WorkerRequest,
@@ -38,6 +39,7 @@ export class HashtreeWorkerClient {
   private connectivityListeners = new Set<(state: ConnectivityState) => void>();
   private uploadProgressListeners = new Set<(progress: UploadProgressState) => void>();
   private blossomBandwidthListeners = new Set<(stats: BlossomBandwidthState) => void>();
+  private diagnosticListeners = new Set<(event: WorkerDiagnosticEvent) => void>();
   private rootWatchListeners = new Map<string, (cid: CID | null) => void>();
   private pendingRootWatchUpdates = new Map<string, CID | null>();
   private p2pFetchHandler: P2PFetchHandler | null = null;
@@ -113,6 +115,11 @@ export class HashtreeWorkerClient {
 
       if (message.type === 'blossomBandwidth') {
         this.blossomBandwidthListeners.forEach(listener => listener(message.stats));
+        return;
+      }
+
+      if (message.type === 'diagnostic') {
+        this.diagnosticListeners.forEach(listener => listener(message.event));
         return;
       }
 
@@ -463,6 +470,13 @@ export class HashtreeWorkerClient {
     this.blossomBandwidthListeners.add(listener);
     return () => {
       this.blossomBandwidthListeners.delete(listener);
+    };
+  }
+
+  onDiagnostic(listener: (event: WorkerDiagnosticEvent) => void): () => void {
+    this.diagnosticListeners.add(listener);
+    return () => {
+      this.diagnosticListeners.delete(listener);
     };
   }
 

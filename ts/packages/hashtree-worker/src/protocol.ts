@@ -12,6 +12,20 @@ export interface WorkerConfig {
   relays?: string[];
   storageMaxBytes?: number;
   connectivityProbeIntervalMs?: number;
+  diagnosticsEnabled?: boolean;
+  diagnosticsMirrorToConsole?: boolean;
+}
+
+export type WorkerDiagnosticLevel = 'debug' | 'info' | 'warn' | 'error';
+export type WorkerDiagnosticDataValue = string | number | boolean | null;
+
+export interface WorkerDiagnosticEvent {
+  scope: string;
+  code: string;
+  level: WorkerDiagnosticLevel;
+  message: string;
+  timestamp: number;
+  data?: Record<string, WorkerDiagnosticDataValue>;
 }
 
 export interface ConnectivityState {
@@ -94,6 +108,7 @@ export type WorkerRequest =
 export type WorkerResponse =
   | { type: 'ready'; id: string }
   | { type: 'error'; id?: string; error: string }
+  | { type: 'diagnostic'; event: WorkerDiagnosticEvent }
   | { type: 'p2pFetch'; requestId: string; hashHex: string }
   | { type: 'blobStreamStarted'; id: string; streamId: string }
   | { type: 'blobStored'; id: string; hashHex: string; nhash: string }

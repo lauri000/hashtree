@@ -14,6 +14,8 @@ import {
 import type {
   BlossomBandwidthState,
   BlobSource,
+  WorkerDiagnosticEvent,
+  WorkerDiagnosticLevel,
   UploadProgressState,
   UploadServerStatus,
   WorkerRequest,
@@ -42,6 +44,8 @@ let probeInterval: ReturnType<typeof setInterval> | null = null;
 let probeIntervalMs = DEFAULT_CONNECTIVITY_PROBE_INTERVAL_MS;
 let p2pFetchCounter = 0;
 let rootWatchCounter = 0;
+let diagnosticsEnabled = false;
+let diagnosticsMirrorToConsole = false;
 const pendingP2PFetches = new Map<
   string,
   { resolve: (data: Uint8Array | null) => void; timeoutId: ReturnType<typeof setTimeout> }
@@ -113,6 +117,44 @@ function respond(message: WorkerResponse): void {
   ctx.postMessage(message);
 }
 
+function emitDiagnostic(
+  level: WorkerDiagnosticLevel,
+  scope: string,
+  code: string,
+  message: string,
+  data?: WorkerDiagnosticEvent['data'],
+): void {
+  if (!diagnosticsEnabled && !diagnosticsMirrorToConsole) {
+    return;
+  }
+
+  const event: WorkerDiagnosticEvent = {
+    scope,
+    code,
+    level,
+    message,
+    timestamp: Date.now(),
+    data,
+  };
+
+  if (diagnosticsEnabled) {
+    respond({ type: 'diagnostic', event });
+  }
+
+  if (diagnosticsMirrorToConsole) {
+    const prefix = `[HashtreeWorker:${scope}:${code}] ${message}`;
+    if (level === 'error') {
+      console.error(prefix, data ?? {});
+      return;
+    }
+    if (level === 'warn') {
+      console.warn(prefix, data ?? {});
+      return;
+    }
+    console.log(prefix, data ?? {});
+  }
+}
+
 function publishBlossomBandwidth(stats: BlossomBandwidthState): void {
   blossomBandwidth = {
     totalBytesSent: stats.totalBytesSent,
@@ -152,6 +194,8 @@ function resetState(): void {
   activePutBlobStreams.clear();
   blossomBandwidth = { ...EMPTY_BLOSSOM_BANDWIDTH };
   nostrRelays = [];
+  diagnosticsEnabled = false;
+  diagnosticsMirrorToConsole = false;
 }
 
 async function markEncryptedTreeHashesAsPeerShareable(id: CID): Promise<void> {
@@ -301,6 +345,7 @@ function decodeDownloadName(path: string): string {
 }
 
 function postMediaError(port: MessagePort, requestId: string, message: string): void {
+  emitDiagnostic('warn', 'media', 'media-request-error', message, { requestId });
   const response: MediaErrorResponse = { type: 'error', requestId, message };
   port.postMessage(response);
 }
@@ -314,6 +359,9 @@ function cloneTransferableChunk(chunk: Uint8Array): Uint8Array {
 
 async function handleMediaFileRequest(port: MessagePort, request: MediaFileRequest): Promise<void> {
   if (!tree) {
+    emitDiagnostic('error', 'media', 'worker-not-initialized', 'Worker not initialized for media request', {
+      requestId: request.requestId,
+    });
     postMediaError(port, request.requestId, 'Worker not initialized');
     return;
   }
@@ -322,9 +370,19 @@ async function handleMediaFileRequest(port: MessagePort, request: MediaFileReque
   try {
     rootCid = nhashDecode(request.nhash);
   } catch {
+    emitDiagnostic('warn', 'media', 'invalid-nhash', 'Invalid nhash for media request', {
+      requestId: request.requestId,
+    });
     postMediaError(port, request.requestId, 'Invalid nhash');
     return;
   }
+
+  emitDiagnostic('debug', 'media', 'request-start', 'Handling media request', {
+    requestId: request.requestId,
+    start: request.start,
+    end: typeof request.end === 'number' ? request.end : null,
+    head: request.head === true,
+  });
 
   let cid = rootCid;
   const requestedPath = request.path.trim().replace(/^\/+/, '');
@@ -333,6 +391,9 @@ async function handleMediaFileRequest(port: MessagePort, request: MediaFileReque
     if (resolved) {
       cid = resolved.cid;
     } else if (await tree.isDirectory(rootCid)) {
+      emitDiagnostic('warn', 'media', 'file-not-found', 'Media file path not found', {
+        requestId: request.requestId,
+      });
       postMediaError(port, request.requestId, 'File not found');
       return;
     }
@@ -340,6 +401,9 @@ async function handleMediaFileRequest(port: MessagePort, request: MediaFileReque
 
   const totalSize = await getPlaintextFileSize(cid);
   if (totalSize === null) {
+    emitDiagnostic('warn', 'media', 'size-not-found', 'Media file size unavailable', {
+      requestId: request.requestId,
+    });
     postMediaError(port, request.requestId, 'File not found');
     return;
   }
@@ -422,17 +486,26 @@ async function handleMediaFileRequest(port: MessagePort, request: MediaFileReque
     }
   }
 
+  emitDiagnostic('debug', 'media', 'request-complete', 'Completed media request', {
+    requestId: request.requestId,
+    totalSize,
+    status: isPartial ? 206 : 200,
+  });
   const doneMessage: MediaDoneResponse = { type: 'done', requestId: request.requestId };
   port.postMessage(doneMessage);
 }
 
 function registerMediaPort(port: MessagePort): void {
+  emitDiagnostic('info', 'media', 'port-registered', 'Registered media MessagePort');
   port.onmessage = (event: MessageEvent<unknown>) => {
     const data = event.data as Partial<MediaFileRequest> | null;
     if (!data || data.type !== 'hashtree-file' || typeof data.requestId !== 'string') {
       return;
     }
     if (typeof data.nhash !== 'string' || typeof data.path !== 'string') {
+      emitDiagnostic('warn', 'media', 'invalid-request', 'Received invalid media request payload', {
+        requestId: data.requestId,
+      });
       postMediaError(port, data.requestId, 'Invalid media request');
       return;
     }
@@ -459,6 +532,8 @@ function init(config: WorkerConfig): void {
   const maxBytes = config.storageMaxBytes || DEFAULT_STORAGE_MAX_BYTES;
   probeIntervalMs = config.connectivityProbeIntervalMs || DEFAULT_CONNECTIVITY_PROBE_INTERVAL_MS;
   nostrRelays = config.relays ?? [];
+  diagnosticsEnabled = config.diagnosticsEnabled === true;
+  diagnosticsMirrorToConsole = config.diagnosticsMirrorToConsole === true;
 
   storage = new IdbBlobStorage(storeName, maxBytes);
   blossom = new BlossomTransport(
@@ -469,6 +544,11 @@ function init(config: WorkerConfig): void {
   );
   tree = new HashTree({ store: createWorkerStore() });
   publishBlossomBandwidth(blossom.getBandwidthStats());
+  emitDiagnostic('info', 'worker', 'initialized', 'Hashtree worker initialized', {
+    storeName,
+    relayCount: nostrRelays.length,
+    diagnosticsMirrorToConsole,
+  });
 
   startConnectivityProbeLoop();
   void emitConnectivityUpdate();

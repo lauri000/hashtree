@@ -1,6 +1,6 @@
 {
   "name": "@hashtree/worker",
-  "version": "0.1.17",
+  "version": "0.1.20",
   "description": "Modular browser worker for hashtree blob caching, tree-root state, and Blossom connectivity",
   "type": "module",
   "main": "dist/index.js",
@@ -29,6 +29,14 @@
     "./protocol": {
       "types": "./dist/protocol.d.ts",
       "import": "./dist/protocol.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js"
+    },
+    "./htree-url": {
+      "types": "./dist/htree-url.d.ts",
+      "import": "./dist/htree-url.js"
     },
     "./htree-path": {
       "types": "./dist/htree-path.d.ts",

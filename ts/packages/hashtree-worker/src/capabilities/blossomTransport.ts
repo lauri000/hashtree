@@ -22,6 +22,10 @@ export const DEFAULT_BLOSSOM_SERVERS: BlossomServerConfig[] = [
 ];
 
 const READ_FETCH_TIMEOUT_MS = 10_000;
+const MAX_CONCURRENT_READ_FETCHES = 12;
+
+let activeReadFetches = 0;
+const pendingReadFetchWaiters: Array<() => void> = [];
 
 export type {
   BlossomBandwidthServerStats,
@@ -70,10 +74,45 @@ function createEphemeralSigner(): BlossomSigner {
   };
 }
 
+function releaseReadFetchSlot(): void {
+  activeReadFetches = Math.max(0, activeReadFetches - 1);
+  pendingReadFetchWaiters.shift()?.();
+}
+
+function withReadFetchSlot<T>(loader: () => Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const start = () => {
+      activeReadFetches += 1;
+      let pending: Promise<T>;
+      try {
+        pending = loader();
+      } catch (error) {
+        releaseReadFetchSlot();
+        reject(error);
+        return;
+      }
+
+      pending
+        .then(resolve, reject)
+        .finally(() => {
+          releaseReadFetchSlot();
+        });
+    };
+
+    if (activeReadFetches < MAX_CONCURRENT_READ_FETCHES) {
+      start();
+      return;
+    }
+
+    pendingReadFetchWaiters.push(start);
+  });
+}
+
 export class BlossomTransport {
   private servers: BlossomServerConfig[];
   private readonly signer: BlossomSigner;
   private readonly bandwidthTracker: BlossomBandwidthTracker;
+  private readonly inflightFetches = new Map<string, Promise<Uint8Array | null>>();
   private store: BlossomStore;
 
   constructor(servers?: BlossomServerConfig[], onBandwidthUpdate?: BlossomBandwidthUpdateHandler) {
@@ -133,6 +172,20 @@ export class BlossomTransport {
   }
 
   async fetch(hashHex: string): Promise<Uint8Array | null> {
+    const inflight = this.inflightFetches.get(hashHex);
+    if (inflight) {
+      return inflight;
+    }
+
+    const pending = this.fetchFromReadServers(hashHex)
+      .finally(() => {
+        this.inflightFetches.delete(hashHex);
+      });
+    this.inflightFetches.set(hashHex, pending);
+    return await pending;
+  }
+
+  private async fetchFromReadServers(hashHex: string): Promise<Uint8Array | null> {
     const readServers = this.servers.filter(server => server.read !== false);
     if (readServers.length === 0) {
       return null;
@@ -155,6 +208,7 @@ export class BlossomTransport {
               resolve(result);
               return;
             }
+
             remaining -= 1;
             if (remaining === 0) {
               resolve(null);
@@ -172,19 +226,21 @@ export class BlossomTransport {
   }
 
   private async fetchFromServer(baseUrl: string, hashHex: string): Promise<Uint8Array | null> {
-    const url = `${baseUrl}/${hashHex}.bin`;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), READ_FETCH_TIMEOUT_MS);
-    try {
-      const res = await fetch(url, { signal: controller.signal });
-      if (!res.ok) return null;
-      const data = new Uint8Array(await res.arrayBuffer());
-      const verified = toHex(await sha256(data)) === hashHex;
-      return verified ? data : null;
-    } catch {
-      return null;
-    } finally {
-      clearTimeout(timeout);
-    }
+    return await withReadFetchSlot(async () => {
+      const url = `${baseUrl}/${hashHex}.bin`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), READ_FETCH_TIMEOUT_MS);
+      try {
+        const res = await fetch(url, { signal: controller.signal });
+        if (!res.ok) return null;
+        const data = new Uint8Array(await res.arrayBuffer());
+        const verified = toHex(await sha256(data)) === hashHex;
+        return verified ? data : null;
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(timeout);
+      }
+    });
   }
 }

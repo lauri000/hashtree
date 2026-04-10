@@ -1,5 +1,47 @@
 export { HashtreeWorkerClient } from './client.js';
 export type { WorkerFactory, P2PFetchHandler } from './client.js';
+export {
+  canUseInjectedHtreeServerUrl,
+  canUseSameOriginHtreeProtocolStreaming,
+  getInjectedHtreeServerUrl,
+  resolveRuntimeHtreeBaseUrl,
+  shouldEagerLoadMediaInNativeChildRuntime,
+  shouldPreferSameOriginHtreeRoutes,
+} from './runtime.js';
+export type {
+  HtreeRuntimeLocationLike,
+  HtreeRuntimeWindowLike,
+  ResolveRuntimeHtreeBaseUrlOptions,
+} from './runtime.js';
+export {
+  resolveRuntimeEndpoints,
+} from './runtime-network.js';
+export type {
+  ResolveRuntimeEndpointsOptions,
+  RuntimeEndpoints,
+} from './runtime-network.js';
+export { createHtreeRuntime } from './app-runtime.js';
+export type {
+  HtreeRuntime,
+  HtreeRuntimeEndpointOverrides,
+  HtreeRuntimeMediaPortOptions,
+  HtreeRuntimeMediaUrlOptions,
+  HtreeRuntimeOptions,
+  HtreeRuntimeRequestUrlOptions,
+  HtreeRuntimeWorkerConfigOptions,
+  RuntimeValueSource,
+} from './app-runtime.js';
+export {
+  buildHtreeRequestPath,
+  parseHtreeUrl,
+  resolveHtreeRequestUrl,
+} from './htree-url.js';
+export type {
+  MutableHtreeRequestStyle,
+  ParsedHtreeUrl,
+  ResolveHtreeRequestUrlOptions,
+} from './htree-url.js';
+export type { HtreeClientIdStorageLike } from './client-id.js';
 export type {
   BlossomServerConfig,
   WorkerConfig,
@@ -8,6 +50,8 @@ export type {
   RootResolveOptions,
   ConnectivityState,
   UploadProgressState,
+  WorkerDiagnosticEvent,
+  WorkerDiagnosticLevel,
   BlossomBandwidthState,
   BlossomBandwidthServerStats,
   BlobSource,

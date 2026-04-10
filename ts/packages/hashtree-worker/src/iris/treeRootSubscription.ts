@@ -29,7 +29,6 @@ const DEFAULT_TREE_ROOT_RELAYS = [
   'wss://relay.nostr.band',
   'wss://relay.snort.social',
   'wss://temp.iris.to',
-  'wss://offchain.pub',
 ];
 
 // Callback to notify main thread

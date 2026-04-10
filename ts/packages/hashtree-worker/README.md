@@ -14,21 +14,83 @@ npm install @hashtree/worker
 
 ```typescript
 import { HashtreeWorkerClient } from '@hashtree/worker';
+import HashtreeWorker from './workers/hashtree.worker.ts?worker';
 
-const client = new HashtreeWorkerClient({ workerFactory });
-
-await client.configure({
+const client = new HashtreeWorkerClient(HashtreeWorker, {
   blossomServers: [{ url: 'https://upload.iris.to', read: true, write: true }],
 });
+await client.init();
 
 // Store and retrieve blobs
-await client.put(hash, data);
-const blob = await client.get(hash);
+const { hashHex } = await client.putBlob(data);
+const { data: blob } = await client.getBlob(hashHex);
 ```
+
+## Iris-Compatible Runtime Defaults
+
+When the app runs inside Iris or another shell that injects `window.__HTREE_SERVER_URL__`
+(or the launch URL carries `iris_htree_server`), the main app-facing API should be
+`createHtreeRuntime(...)`:
+
+```typescript
+import {
+  HashtreeWorkerClient,
+  createHtreeRuntime,
+} from '@hashtree/worker';
+import HashtreeWorker from './workers/hashtree.worker.ts?worker';
+
+const DEFAULT_RELAYS = [
+  'wss://relay.damus.io',
+  'wss://relay.primal.net',
+];
+
+const DEFAULT_BLOSSOM_SERVERS = [
+  { url: 'https://upload.iris.to', read: false, write: true },
+  { url: 'https://cdn.iris.to', read: true, write: false },
+];
+
+const runtime = createHtreeRuntime({
+  appId: 'my-app',
+  relays: DEFAULT_RELAYS,
+  blossomServers: DEFAULT_BLOSSOM_SERVERS,
+});
+
+const workerClient = new HashtreeWorkerClient(HashtreeWorker, {
+  ...runtime.getWorkerConfig({
+    storeName: 'my-app-worker',
+  }),
+});
+
+const mediaUrl = runtime.urls.media('htree://nhash1example/video.mp4', {
+  clientScoped: true,
+  mimeType: 'video/mp4',
+});
+
+await runtime.media.ensureReady({
+  registerMediaPort: (port) => workerClient.registerMediaPort(port),
+});
+```
+
+Behavior:
+
+- In plain web mode, `runtime.endpoints` keeps your configured public relays and Blossom servers.
+- In Iris/native child runtimes, `runtime.endpoints` and `runtime.getWorkerConfig()` switch transport defaults to the local daemon endpoints.
+- `runtime.urls.media(...)` handles `/htree/...` URL generation plus the per-client `htree_c` and optional `htree_t` query params.
+- `runtime.media.ensureReady(...)` handles the common page-side service-worker/media-port handshake.
+
+## Service Worker Client Keys
+
+If your service worker intercepts `/htree/...` media requests and forwards them to a worker over `MessagePort`, use a stable per-tab client key:
+
+- `createHtreeRuntime(...)` generates it once per tab/webview.
+- `runtime.urls.media(..., { clientScoped: true })` appends it as the `htree_c` query param.
+- `runtime.media.ensureReady(...)` sends the same key in `REGISTER_WORKER_PORT` and `PING_WORKER_PORT`.
+
+That lets the service worker map fetches back to the correct worker port when multiple tabs or isolated Iris child webviews are active at once, without falling back to a single global port.
 
 ## Exports
 
-- `@hashtree/worker` — `HashtreeWorkerClient` for main-thread use
+- `@hashtree/worker` — `createHtreeRuntime`, `resolveRuntimeEndpoints`, and `HashtreeWorkerClient`
 - `@hashtree/worker/p2p` — `WebRTCController` / `WebRTCProxy` for P2P data channel management
 - `@hashtree/worker/entry` — Worker entry point
 - `@hashtree/worker/protocol` — Shared message types between main thread and worker

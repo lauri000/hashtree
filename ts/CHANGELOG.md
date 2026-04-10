@@ -2,7 +2,25 @@
 
 ## Unreleased
 
-No published-package changes have landed since `@hashtree/worker@0.1.11` on 2026-04-01, so there is no pending npm version bump right now.
+No published-package changes have landed since `@hashtree/worker@0.1.20` on 2026-04-10, so there is no pending npm version bump right now.
+
+## 0.1.20 - 2026-04-10
+
+Changes since the previous npm package publish.
+
+### Added
+
+- Added `createHtreeRuntime(...)` plus runtime URL helpers so Iris-compatible apps can consistently resolve the active htree, relay, and Blossom endpoints and generate `/htree/...` request URLs with per-client scoping.
+- Added worker diagnostics events and client listeners so apps can observe runtime/media issues without scraping console output.
+
+### Improved
+
+- Improved `@hashtree/worker` Blossom reads by deduplicating concurrent fetches for the same hash and limiting cross-hash read concurrency.
+- Updated the package documentation to show the intended worker bootstrap and Iris-compatible runtime pattern.
+
+### Changed
+
+- Removed `wss://offchain.pub` from the default relay fallback lists used by root resolution and Iris tree-root subscriptions.
 
 ## 0.1.11 - 2026-04-01
 
