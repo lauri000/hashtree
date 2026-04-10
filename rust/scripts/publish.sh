@@ -53,6 +53,7 @@ TIER_2_CRATES=(
 )
 
 TIER_3_CRATES=(
+    "hashtree-collection"
     "hashtree-nostr"
     "hashtree-network"
 )

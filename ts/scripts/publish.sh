@@ -35,6 +35,7 @@ PACKAGES=(
     "@hashtree/dexie"
     "@hashtree/git"
     "@hashtree/index"
+    "@hashtree/collection"
     "@hashtree/nostr"
     "@hashtree/worker"
 )

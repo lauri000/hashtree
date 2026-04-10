@@ -24,6 +24,7 @@ test('publish plan lists hashtree npm packages in dependency order', () => {
     '@hashtree/dexie',
     '@hashtree/git',
     '@hashtree/index',
+    '@hashtree/collection',
     '@hashtree/nostr',
     '@hashtree/worker',
   ]);
