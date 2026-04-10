@@ -157,7 +157,7 @@ export class BTree {
       return null;
     }
 
-    sorted.sort((left, right) => left[0].localeCompare(right[0]));
+    sorted.sort((left, right) => compareKeys(left[0], right[0]));
 
     const deduped: Array<[string, string]> = [];
     for (const [key, value] of sorted) {
@@ -199,7 +199,7 @@ export class BTree {
       return null;
     }
 
-    sorted.sort((left, right) => left[0].localeCompare(right[0]));
+    sorted.sort((left, right) => compareKeys(left[0], right[0]));
 
     const deduped: Array<[string, CID]> = [];
     for (const [key, cid] of sorted) {
@@ -368,8 +368,8 @@ export class BTree {
       for (const entry of sorted) {
         if (entry.type !== LinkType.File) continue;
         const key = unescapeKey(entry.name);
-        if (start !== undefined && key < start) continue;
-        if (end !== undefined && key >= end) return;
+        if (start !== undefined && compareKeys(key, start) < 0) continue;
+        if (end !== undefined && compareKeys(key, end) >= 0) return;
         yield [key, entry.cid];
       }
     } else {
@@ -378,8 +378,8 @@ export class BTree {
         const childMinKey = unescapeKey(child.name);
         const childMaxKey = i < sorted.length - 1 ? unescapeKey(sorted[i + 1].name) : undefined;
 
-        if (start !== undefined && childMaxKey !== undefined && childMaxKey <= start) continue;
-        if (end !== undefined && childMinKey >= end) return;
+        if (start !== undefined && childMaxKey !== undefined && compareKeys(childMaxKey, start) <= 0) continue;
+        if (end !== undefined && compareKeys(childMinKey, end) >= 0) return;
 
         yield* this.rangeLinkTraverse(child.cid, start, end);
       }
@@ -499,7 +499,7 @@ export class BTree {
 
     for (let i = 0; i < sorted.length - 1; i++) {
       const nextName = unescapeKey(sorted[i + 1].name);
-      if (key < nextName) {
+      if (compareKeys(key, nextName) < 0) {
         return { child: sorted[i], childIndex: i };
       }
     }
@@ -509,7 +509,7 @@ export class BTree {
 
   private sortEntries(entries: TreeEntry[]): TreeEntry[] {
     return [...entries].sort((a, b) =>
-      unescapeKey(a.name).localeCompare(unescapeKey(b.name))
+      compareKeys(unescapeKey(a.name), unescapeKey(b.name))
     );
   }
 
@@ -619,8 +619,8 @@ export class BTree {
       for (const entry of sorted) {
         if (entry.type !== LinkType.Blob) continue;
         const key = unescapeKey(entry.name);
-        if (start !== undefined && key < start) continue;
-        if (end !== undefined && key >= end) return;
+        if (start !== undefined && compareKeys(key, start) < 0) continue;
+        if (end !== undefined && compareKeys(key, end) >= 0) return;
 
         const data = await this.tree.readFile(entry.cid);
         if (data) {
@@ -633,8 +633,8 @@ export class BTree {
         const childMinKey = unescapeKey(child.name);
         const childMaxKey = i < sorted.length - 1 ? unescapeKey(sorted[i + 1].name) : undefined;
 
-        if (start !== undefined && childMaxKey !== undefined && childMaxKey <= start) continue;
-        if (end !== undefined && childMinKey >= end) return;
+        if (start !== undefined && childMaxKey !== undefined && compareKeys(childMaxKey, start) <= 0) continue;
+        if (end !== undefined && compareKeys(childMinKey, end) >= 0) return;
 
         yield* this.rangeTraverse(child.cid, start, end);
       }
@@ -692,6 +692,12 @@ export function unescapeKey(name: string): string {
     .replace(/%2F/gi, '/')
     .replace(/%00/gi, '\0')
     .replace(/%25/g, '%');
+}
+
+function compareKeys(left: string, right: string): number {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
 }
 
 function incrementPrefix(str: string): string {

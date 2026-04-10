@@ -238,6 +238,36 @@ describe('BTree', () => {
       expect(root).not.toBeNull();
       expect(await btree.getLink(root, 'dup')).toEqual(second.cid);
     });
+
+    it('should keep exact and prefix lookups consistent for non-ascii bulk-built keys', async () => {
+      const unicodeBtree = new BTree(store, { order: 4 });
+      const keys = [
+        's:avarice:id-1',
+        's:bastard:id-1',
+        's:berzerker:id-1',
+        's:bong:id-1',
+        's:bätlick:id-1',
+      ];
+      const items: Array<[string, CID]> = [];
+
+      for (const key of keys) {
+        const { cid } = await tree.putFile(new TextEncoder().encode(key));
+        items.push([key, cid]);
+      }
+
+      const root = await unicodeBtree.buildLinks(items);
+      expect(root).not.toBeNull();
+
+      for (const [key, cid] of items) {
+        expect(await unicodeBtree.getLink(root, key)).toEqual(cid);
+
+        const hits: string[] = [];
+        for await (const [hit] of unicodeBtree.prefixLinks(root, key)) {
+          hits.push(hit);
+        }
+        expect(hits).toEqual([key]);
+      }
+    });
   });
 
   describe('compound keys for Nostr', () => {
