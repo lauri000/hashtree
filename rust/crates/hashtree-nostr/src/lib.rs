@@ -20,15 +20,17 @@ use std::time::{Duration, Instant};
 
 use std::cell::RefCell;
 
+use hashtree_collection::{
+    load_collection_state, CollectionDefinition, CollectionOptions, CollectionSource,
+    CollectionState, CollectionWriter,
+};
 use hashtree_core::{
-    sha256, BufferedStore, Cid, DirEntry, HashTree, HashTreeConfig, HashTreeError, LinkType, Store,
-    TreeVisibility,
+    sha256, BufferedStore, Cid, HashTree, HashTreeConfig, HashTreeError, Store, TreeVisibility,
 };
 use hashtree_index::{BTree, BTreeError, BTreeOptions};
 use serde::{Deserialize, Serialize};
 
 const EVENT_ENVELOPE_VERSION: u8 = 1;
-const MANIFEST_BY_ID: &str = "by-id";
 const MANIFEST_BY_AUTHOR_TIME: &str = "by-author-time";
 const MANIFEST_BY_AUTHOR_KIND_TIME: &str = "by-author-kind-time";
 const MANIFEST_BY_KIND_TIME: &str = "by-kind-time";
@@ -160,6 +162,8 @@ pub enum NostrEventStoreError {
     HashTree(#[from] HashTreeError),
     #[error("index error: {0}")]
     Index(#[from] BTreeError),
+    #[error("collection error: {0}")]
+    Collection(#[from] hashtree_collection::CollectionError),
     #[error("encode error: {0}")]
     Encode(#[from] rmp_serde::encode::Error),
     #[error("decode error: {0}")]
@@ -358,6 +362,86 @@ pub struct NostrEventStoreOptions {
     pub btree_order: Option<usize>,
 }
 
+fn nostr_collection_definition() -> CollectionDefinition<StoredNostrEvent> {
+    CollectionDefinition::new(|event: &StoredNostrEvent| event.id.clone())
+        .with_key_index(MANIFEST_BY_AUTHOR_TIME, |event| {
+            vec![author_time_key(event)]
+        })
+        .with_key_index(MANIFEST_BY_AUTHOR_KIND_TIME, |event| {
+            vec![author_kind_time_key(event)]
+        })
+        .with_key_index(MANIFEST_BY_KIND_TIME, |event| vec![kind_time_key(event)])
+        .with_key_index(MANIFEST_BY_TIME, |event| vec![time_key(event)])
+        .with_key_index(MANIFEST_BY_TAG, |event| tag_keys(event))
+        .with_key_index(MANIFEST_REPLACEABLE, |event| {
+            if is_replaceable_kind(event.kind) {
+                vec![replaceable_key(&event.pubkey, event.kind)]
+            } else {
+                Vec::new()
+            }
+        })
+        .with_key_index(MANIFEST_PARAMETERIZED_REPLACEABLE, |event| {
+            if is_parameterized_replaceable_kind(event.kind) {
+                vec![parameterized_replaceable_key(
+                    &event.pubkey,
+                    event.kind,
+                    &parameterized_replaceable_d_tag(event),
+                )]
+            } else {
+                Vec::new()
+            }
+        })
+}
+
+fn nostr_collection_options(options: &NostrEventStoreOptions) -> CollectionOptions {
+    CollectionOptions {
+        btree_order: options.btree_order,
+    }
+}
+
+fn collection_state_from_nostr_manifest(manifest: &NostrEventManifest) -> CollectionState {
+    let mut key_roots = BTreeMap::new();
+    key_roots.insert(
+        MANIFEST_BY_AUTHOR_TIME.to_string(),
+        manifest.by_author_time.clone(),
+    );
+    key_roots.insert(
+        MANIFEST_BY_AUTHOR_KIND_TIME.to_string(),
+        manifest.by_author_kind_time.clone(),
+    );
+    key_roots.insert(
+        MANIFEST_BY_KIND_TIME.to_string(),
+        manifest.by_kind_time.clone(),
+    );
+    key_roots.insert(MANIFEST_BY_TIME.to_string(), manifest.by_time.clone());
+    key_roots.insert(MANIFEST_BY_TAG.to_string(), manifest.by_tag.clone());
+    key_roots.insert(
+        MANIFEST_REPLACEABLE.to_string(),
+        manifest.replaceable.clone(),
+    );
+    key_roots.insert(
+        MANIFEST_PARAMETERIZED_REPLACEABLE.to_string(),
+        manifest.parameterized_replaceable.clone(),
+    );
+    CollectionState {
+        by_id_root: manifest.by_id.clone(),
+        key_roots,
+    }
+}
+
+fn nostr_manifest_from_collection_state(state: &CollectionState) -> NostrEventManifest {
+    NostrEventManifest {
+        by_id: state.by_id_root.clone(),
+        by_author_time: state.key_root(MANIFEST_BY_AUTHOR_TIME).cloned(),
+        by_author_kind_time: state.key_root(MANIFEST_BY_AUTHOR_KIND_TIME).cloned(),
+        by_kind_time: state.key_root(MANIFEST_BY_KIND_TIME).cloned(),
+        by_time: state.key_root(MANIFEST_BY_TIME).cloned(),
+        by_tag: state.key_root(MANIFEST_BY_TAG).cloned(),
+        replaceable: state.key_root(MANIFEST_REPLACEABLE).cloned(),
+        parameterized_replaceable: state.key_root(MANIFEST_PARAMETERIZED_REPLACEABLE).cloned(),
+    }
+}
+
 impl<S: Store> NostrEventStore<S> {
     pub fn new(store: Arc<S>) -> Self {
         Self::with_options(store, NostrEventStoreOptions::default())
@@ -502,10 +586,8 @@ impl<S: Store> NostrEventStore<S> {
     ) -> Result<Option<StoredNostrEvent>, NostrEventStoreError> {
         validate_lower_hex(event_id, 64, "event id")?;
         let manifest = self.get_manifest(root).await?;
-        let Some(by_id) = manifest.by_id.as_ref() else {
-            return Ok(None);
-        };
-        let Some(event_cid) = self.index.get_link(Some(by_id), event_id).await? else {
+        let source = self.collection_source_from_manifest(&manifest);
+        let Some(event_cid) = source.get(event_id).await? else {
             return Ok(None);
         };
         match self.read_stored_event(&event_cid).await {
@@ -594,12 +676,9 @@ impl<S: Store> NostrEventStore<S> {
         kind: u32,
     ) -> Result<Option<StoredNostrEvent>, NostrEventStoreError> {
         let manifest = self.get_manifest(root).await?;
-        let Some(replaceable) = manifest.replaceable.as_ref() else {
-            return Ok(None);
-        };
-
         let key = replaceable_key(&validate_lower_hex(pubkey, 64, "pubkey")?, kind);
-        let Some(cid) = self.index.get_link(Some(replaceable), &key).await? else {
+        let source = self.collection_source_from_manifest(&manifest);
+        let Some(cid) = source.get_index_link(MANIFEST_REPLACEABLE, &key).await? else {
             return Ok(None);
         };
         match self.read_stored_event(&cid).await {
@@ -656,13 +735,13 @@ impl<S: Store> NostrEventStore<S> {
         d_tag: &str,
     ) -> Result<Option<StoredNostrEvent>, NostrEventStoreError> {
         let manifest = self.get_manifest(root).await?;
-        let Some(parameterized) = manifest.parameterized_replaceable.as_ref() else {
-            return Ok(None);
-        };
-
         let key =
             parameterized_replaceable_key(&validate_lower_hex(pubkey, 64, "pubkey")?, kind, d_tag);
-        let Some(cid) = self.index.get_link(Some(parameterized), &key).await? else {
+        let source = self.collection_source_from_manifest(&manifest);
+        let Some(cid) = source
+            .get_index_link(MANIFEST_PARAMETERIZED_REPLACEABLE, &key)
+            .await?
+        else {
             return Ok(None);
         };
         match self.read_stored_event(&cid).await {
@@ -676,24 +755,9 @@ impl<S: Store> NostrEventStore<S> {
         &self,
         root: Option<&Cid>,
     ) -> Result<NostrEventManifest, NostrEventStoreError> {
-        let Some(root) = root else {
-            return Ok(NostrEventManifest::default());
-        };
-
-        let entries = self.tree.list_directory(root).await?;
-        Ok(NostrEventManifest {
-            by_id: find_manifest_cid(&entries, MANIFEST_BY_ID),
-            by_author_time: find_manifest_cid(&entries, MANIFEST_BY_AUTHOR_TIME),
-            by_author_kind_time: find_manifest_cid(&entries, MANIFEST_BY_AUTHOR_KIND_TIME),
-            by_kind_time: find_manifest_cid(&entries, MANIFEST_BY_KIND_TIME),
-            by_time: find_manifest_cid(&entries, MANIFEST_BY_TIME),
-            by_tag: find_manifest_cid(&entries, MANIFEST_BY_TAG),
-            replaceable: find_manifest_cid(&entries, MANIFEST_REPLACEABLE),
-            parameterized_replaceable: find_manifest_cid(
-                &entries,
-                MANIFEST_PARAMETERIZED_REPLACEABLE,
-            ),
-        })
+        let definition = nostr_collection_definition();
+        let state = load_collection_state(Arc::clone(&self.store), &definition, root).await?;
+        Ok(nostr_manifest_from_collection_state(&state))
     }
 
     async fn collect_events(
@@ -775,7 +839,7 @@ impl<S: Store> NostrEventStore<S> {
         let replaceable = self
             .resolve_replaceable_decision(manifest, &normalized)
             .await?;
-        let (replaceable_slot, replaced_existing) = match replaceable {
+        let (_replaceable_slot, replaced_existing) = match replaceable {
             ReplaceableDecision::Reject => return Ok(()),
             ReplaceableDecision::Accept { replaced, slot } => (slot, replaced),
         };
@@ -789,92 +853,21 @@ impl<S: Store> NostrEventStore<S> {
             self.tree.put_file(&event_bytes).await?
         };
 
-        if let Some(existing) = replaced_existing.as_ref() {
-            self.remove_event_from_manifest(manifest, &existing.event)
+        let mut collection = self.collection_writer_from_manifest(manifest);
+        {
+            let _profile = ProfileGuard::new("nostr.add.index.collection");
+            collection
+                .put(
+                    &normalized,
+                    &event_cid,
+                    replaced_existing.as_ref().map(|existing| &existing.event),
+                )
                 .await?;
+        }
+        *manifest = nostr_manifest_from_collection_state(collection.state());
+
+        if let Some(existing) = replaced_existing.as_ref() {
             obsolete_event_cids.push(existing.cid.clone());
-        }
-
-        manifest.by_id = Some({
-            let _profile = ProfileGuard::new("nostr.add.index.by_id");
-            self.index
-                .insert_link_unchecked(manifest.by_id.as_ref(), &normalized.id, &event_cid)
-                .await?
-        });
-        manifest.by_author_time = Some({
-            let _profile = ProfileGuard::new("nostr.add.index.by_author_time");
-            self.index
-                .insert_link_unchecked(
-                    manifest.by_author_time.as_ref(),
-                    &author_time_key(&normalized),
-                    &event_cid,
-                )
-                .await?
-        });
-        manifest.by_author_kind_time = Some({
-            let _profile = ProfileGuard::new("nostr.add.index.by_author_kind_time");
-            self.index
-                .insert_link_unchecked(
-                    manifest.by_author_kind_time.as_ref(),
-                    &author_kind_time_key(&normalized),
-                    &event_cid,
-                )
-                .await?
-        });
-        manifest.by_kind_time = Some({
-            let _profile = ProfileGuard::new("nostr.add.index.by_kind_time");
-            self.index
-                .insert_link_unchecked(
-                    manifest.by_kind_time.as_ref(),
-                    &kind_time_key(&normalized),
-                    &event_cid,
-                )
-                .await?
-        });
-        manifest.by_time = Some({
-            let _profile = ProfileGuard::new("nostr.add.index.by_time");
-            self.index
-                .insert_link_unchecked(
-                    manifest.by_time.as_ref(),
-                    &time_key(&normalized),
-                    &event_cid,
-                )
-                .await?
-        });
-
-        for tag_key in tag_keys(&normalized) {
-            manifest.by_tag = Some({
-                let _profile = ProfileGuard::new("nostr.add.index.by_tag");
-                self.index
-                    .insert_link_unchecked(manifest.by_tag.as_ref(), &tag_key, &event_cid)
-                    .await?
-            });
-        }
-
-        if let Some((slot, key)) = replaceable_slot {
-            match slot {
-                ReplaceableSlot::Replaceable => {
-                    manifest.replaceable = Some({
-                        let _profile = ProfileGuard::new("nostr.add.index.replaceable");
-                        self.index
-                            .insert_link(manifest.replaceable.as_ref(), &key, &event_cid)
-                            .await?
-                    });
-                }
-                ReplaceableSlot::Parameterized => {
-                    manifest.parameterized_replaceable = Some({
-                        let _profile =
-                            ProfileGuard::new("nostr.add.index.parameterized_replaceable");
-                        self.index
-                            .insert_link(
-                                manifest.parameterized_replaceable.as_ref(),
-                                &key,
-                                &event_cid,
-                            )
-                            .await?
-                    });
-                }
-            }
         }
 
         Ok(())
@@ -884,79 +877,22 @@ impl<S: Store> NostrEventStore<S> {
         &self,
         events: Vec<StoredNostrEvent>,
     ) -> Result<Option<Cid>, NostrEventStoreError> {
-        let mut by_id = Vec::with_capacity(events.len());
-        let mut by_author_time = Vec::with_capacity(events.len());
-        let mut by_author_kind_time = Vec::with_capacity(events.len());
-        let mut by_kind_time = Vec::with_capacity(events.len());
-        let mut by_time = Vec::with_capacity(events.len());
-        let mut by_tag = Vec::new();
-        let mut replaceable = BTreeMap::<String, (StoredNostrEvent, Cid)>::new();
-        let mut parameterized_replaceable = BTreeMap::<String, (StoredNostrEvent, Cid)>::new();
+        let mut indexed_events = Vec::with_capacity(events.len());
 
         for event in events {
             let normalized = self.validate_event(event).await?;
             let event_bytes = self.encode_validated_event(&normalized)?;
             let (event_cid, _size) = self.tree.put_file(&event_bytes).await?;
-
-            by_id.push((normalized.id.clone(), event_cid.clone()));
-            by_author_time.push((author_time_key(&normalized), event_cid.clone()));
-            by_author_kind_time.push((author_kind_time_key(&normalized), event_cid.clone()));
-            by_kind_time.push((kind_time_key(&normalized), event_cid.clone()));
-            by_time.push((time_key(&normalized), event_cid.clone()));
-
-            for tag_key in tag_keys(&normalized) {
-                by_tag.push((tag_key, event_cid.clone()));
-            }
-
-            if is_replaceable_kind(normalized.kind) {
-                update_bulk_winner(
-                    &mut replaceable,
-                    replaceable_key(&normalized.pubkey, normalized.kind),
-                    &normalized,
-                    &event_cid,
-                );
-            }
-
-            if is_parameterized_replaceable_kind(normalized.kind) {
-                update_bulk_winner(
-                    &mut parameterized_replaceable,
-                    parameterized_replaceable_key(
-                        &normalized.pubkey,
-                        normalized.kind,
-                        &parameterized_replaceable_d_tag(&normalized),
-                    ),
-                    &normalized,
-                    &event_cid,
-                );
-            }
+            indexed_events.push((normalized, event_cid));
         }
 
-        let manifest = NostrEventManifest {
-            by_id: self.index.build_links(by_id).await?,
-            by_author_time: self.index.build_links(by_author_time).await?,
-            by_author_kind_time: self.index.build_links(by_author_kind_time).await?,
-            by_kind_time: self.index.build_links(by_kind_time).await?,
-            by_time: self.index.build_links(by_time).await?,
-            by_tag: self.index.build_links(by_tag).await?,
-            replaceable: self
-                .index
-                .build_links(
-                    replaceable
-                        .into_iter()
-                        .map(|(key, (_event, cid))| (key, cid)),
-                )
-                .await?,
-            parameterized_replaceable: self
-                .index
-                .build_links(
-                    parameterized_replaceable
-                        .into_iter()
-                        .map(|(key, (_event, cid))| (key, cid)),
-                )
-                .await?,
-        };
-
-        self.write_manifest(&manifest).await
+        let mut collection = CollectionWriter::with_options(
+            Arc::clone(&self.store),
+            nostr_collection_definition(),
+            nostr_collection_options(&self.options),
+        );
+        collection.rebuild(indexed_events).await?;
+        collection.write_root().await.map_err(Into::into)
     }
 
     async fn resolve_replaceable_decision(
@@ -989,13 +925,16 @@ impl<S: Store> NostrEventStore<S> {
             });
         };
 
-        let root = match slot_kind {
-            ReplaceableSlot::Replaceable => manifest.replaceable.as_ref(),
-            ReplaceableSlot::Parameterized => manifest.parameterized_replaceable.as_ref(),
-        };
-        let existing_cid = match root {
-            Some(root) => self.index.get_link(Some(root), &key).await?,
-            None => None,
+        let source = self.collection_source_from_manifest(manifest);
+        let existing_cid = match slot_kind {
+            ReplaceableSlot::Replaceable => {
+                source.get_index_link(MANIFEST_REPLACEABLE, &key).await?
+            }
+            ReplaceableSlot::Parameterized => {
+                source
+                    .get_index_link(MANIFEST_PARAMETERIZED_REPLACEABLE, &key)
+                    .await?
+            }
         };
 
         let Some(existing_cid) = existing_cid else {
@@ -1028,43 +967,6 @@ impl<S: Store> NostrEventStore<S> {
         Ok(ReplaceableDecision::Reject)
     }
 
-    async fn remove_event_from_manifest(
-        &self,
-        manifest: &mut NostrEventManifest,
-        event: &StoredNostrEvent,
-    ) -> Result<(), NostrEventStoreError> {
-        if let Some(root) = manifest.by_id.as_ref() {
-            manifest.by_id = self.index.delete(root, &event.id).await?;
-        }
-        if let Some(root) = manifest.by_author_time.as_ref() {
-            manifest.by_author_time = self.index.delete(root, &author_time_key(event)).await?;
-        }
-        if let Some(root) = manifest.by_author_kind_time.as_ref() {
-            manifest.by_author_kind_time = self
-                .index
-                .delete(root, &author_kind_time_key(event))
-                .await?;
-        }
-        if let Some(root) = manifest.by_kind_time.as_ref() {
-            manifest.by_kind_time = self.index.delete(root, &kind_time_key(event)).await?;
-        }
-        if let Some(root) = manifest.by_time.as_ref() {
-            manifest.by_time = self.index.delete(root, &time_key(event)).await?;
-        }
-        if let Some(root) = manifest.by_tag.as_ref() {
-            let mut current = Some(root.clone());
-            for tag_key in tag_keys(event) {
-                let Some(active_root) = current.as_ref() else {
-                    break;
-                };
-                current = self.index.delete(active_root, &tag_key).await?;
-            }
-            manifest.by_tag = current;
-        }
-
-        Ok(())
-    }
-
     async fn delete_obsolete_event_blobs(
         &self,
         obsolete_event_cids: &[Cid],
@@ -1081,46 +983,30 @@ impl<S: Store> NostrEventStore<S> {
         &self,
         manifest: &NostrEventManifest,
     ) -> Result<Option<Cid>, NostrEventStoreError> {
-        let mut entries = Vec::new();
-        if let Some(cid) = manifest.by_id.as_ref() {
-            entries.push(DirEntry::from_cid(MANIFEST_BY_ID, cid).with_link_type(LinkType::Dir));
-        }
-        if let Some(cid) = manifest.by_author_time.as_ref() {
-            entries.push(
-                DirEntry::from_cid(MANIFEST_BY_AUTHOR_TIME, cid).with_link_type(LinkType::Dir),
-            );
-        }
-        if let Some(cid) = manifest.by_author_kind_time.as_ref() {
-            entries.push(
-                DirEntry::from_cid(MANIFEST_BY_AUTHOR_KIND_TIME, cid).with_link_type(LinkType::Dir),
-            );
-        }
-        if let Some(cid) = manifest.by_kind_time.as_ref() {
-            entries
-                .push(DirEntry::from_cid(MANIFEST_BY_KIND_TIME, cid).with_link_type(LinkType::Dir));
-        }
-        if let Some(cid) = manifest.by_time.as_ref() {
-            entries.push(DirEntry::from_cid(MANIFEST_BY_TIME, cid).with_link_type(LinkType::Dir));
-        }
-        if let Some(cid) = manifest.by_tag.as_ref() {
-            entries.push(DirEntry::from_cid(MANIFEST_BY_TAG, cid).with_link_type(LinkType::Dir));
-        }
-        if let Some(cid) = manifest.replaceable.as_ref() {
-            entries
-                .push(DirEntry::from_cid(MANIFEST_REPLACEABLE, cid).with_link_type(LinkType::Dir));
-        }
-        if let Some(cid) = manifest.parameterized_replaceable.as_ref() {
-            entries.push(
-                DirEntry::from_cid(MANIFEST_PARAMETERIZED_REPLACEABLE, cid)
-                    .with_link_type(LinkType::Dir),
-            );
-        }
+        let collection = self.collection_writer_from_manifest(manifest);
+        Ok(collection.write_root().await?)
+    }
 
-        if entries.is_empty() {
-            return Ok(None);
-        }
+    fn collection_source_from_manifest(
+        &self,
+        manifest: &NostrEventManifest,
+    ) -> CollectionSource<S> {
+        CollectionSource::new(
+            Arc::clone(&self.store),
+            collection_state_from_nostr_manifest(manifest),
+        )
+    }
 
-        Ok(Some(self.tree.put_directory(entries).await?))
+    fn collection_writer_from_manifest(
+        &self,
+        manifest: &NostrEventManifest,
+    ) -> CollectionWriter<S, StoredNostrEvent> {
+        CollectionWriter::with_state_and_options(
+            Arc::clone(&self.store),
+            nostr_collection_definition(),
+            collection_state_from_nostr_manifest(manifest),
+            nostr_collection_options(&self.options),
+        )
     }
 
     async fn validate_event(
@@ -1403,33 +1289,4 @@ fn retain_latest_replaceable_events(events: Vec<StoredNostrEvent>) -> Vec<Stored
 
     plain.extend(winners.into_values());
     plain
-}
-
-fn update_bulk_winner(
-    winners: &mut BTreeMap<String, (StoredNostrEvent, Cid)>,
-    key: String,
-    event: &StoredNostrEvent,
-    cid: &Cid,
-) {
-    match winners.get_mut(&key) {
-        Some((current, current_cid)) => {
-            if compare_events(event, current) > 0 {
-                *current = event.clone();
-                *current_cid = cid.clone();
-            }
-        }
-        None => {
-            winners.insert(key, (event.clone(), cid.clone()));
-        }
-    }
-}
-
-fn find_manifest_cid(entries: &[hashtree_core::TreeEntry], name: &str) -> Option<Cid> {
-    entries
-        .iter()
-        .find(|entry| entry.name == name)
-        .map(|entry| Cid {
-            hash: entry.hash,
-            key: entry.key,
-        })
 }

@@ -9,6 +9,7 @@ authors.workspace = true
 description = "Hashtree-native Nostr event indexes"
 
 [dependencies]
+hashtree-collection.workspace = true
 hashtree-core.workspace = true
 hashtree-index.workspace = true
 futures.workspace = true
