@@ -63,6 +63,33 @@ describe('BTree', () => {
       const rootAfterDelete = await btree.delete(root, 'nonexistent');
       expect(rootAfterDelete?.hash).toEqual(root.hash);
     });
+
+    it('should build a tree from unsorted entries', async () => {
+      const root = await btree.build([
+        ['d', '4'],
+        ['b', '2'],
+        ['a', '1'],
+        ['c', '3'],
+      ]);
+
+      expect(root).not.toBeNull();
+      expect(await btree.get(root, 'a')).toBe('1');
+      expect(await btree.get(root, 'b')).toBe('2');
+      expect(await btree.get(root, 'c')).toBe('3');
+      expect(await btree.get(root, 'd')).toBe('4');
+    });
+
+    it('should keep the last value when build sees duplicate keys', async () => {
+      const root = await btree.build([
+        ['dup', '1'],
+        ['a', 'x'],
+        ['dup', '2'],
+      ]);
+
+      expect(root).not.toBeNull();
+      expect(await btree.get(root, 'dup')).toBe('2');
+      expect(await btree.get(root, 'a')).toBe('x');
+    });
   });
 
   describe('node splitting', () => {
@@ -178,6 +205,38 @@ describe('BTree', () => {
         ['user:003', 'user:003'],
         ['user:004', 'user:004'],
       ]);
+    });
+  });
+
+  describe('link bulk build', () => {
+    it('should build a link tree from unsorted entries', async () => {
+      const a = await tree.putFile(new TextEncoder().encode('a'));
+      const b = await tree.putFile(new TextEncoder().encode('b'));
+      const c = await tree.putFile(new TextEncoder().encode('c'));
+
+      const root = await btree.buildLinks([
+        ['c', c.cid],
+        ['a', a.cid],
+        ['b', b.cid],
+      ]);
+
+      expect(root).not.toBeNull();
+      expect(await btree.getLink(root, 'a')).toEqual(a.cid);
+      expect(await btree.getLink(root, 'b')).toEqual(b.cid);
+      expect(await btree.getLink(root, 'c')).toEqual(c.cid);
+    });
+
+    it('should keep the last cid when buildLinks sees duplicate keys', async () => {
+      const first = await tree.putFile(new TextEncoder().encode('first'));
+      const second = await tree.putFile(new TextEncoder().encode('second'));
+
+      const root = await btree.buildLinks([
+        ['dup', first.cid],
+        ['dup', second.cid],
+      ]);
+
+      expect(root).not.toBeNull();
+      expect(await btree.getLink(root, 'dup')).toEqual(second.cid);
     });
   });
 

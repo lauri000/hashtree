@@ -427,8 +427,9 @@ export class HashtreeWorkerClient {
     }
 
     this.rootWatchListeners.set(res.watchId, listener);
-    const initialCid = res.cid ?? null;
-    listener(initialCid);
+    if ('cid' in res) {
+      listener(res.cid ?? null);
+    }
     if (this.pendingRootWatchUpdates.has(res.watchId)) {
       const pendingCid = this.pendingRootWatchUpdates.get(res.watchId) ?? null;
       this.pendingRootWatchUpdates.delete(res.watchId);

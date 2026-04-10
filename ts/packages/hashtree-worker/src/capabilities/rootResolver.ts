@@ -1,6 +1,6 @@
 import type { CID, HashTree } from '@hashtree/core';
 import { parseHashtreeRootEvent, type NostrEvent } from '@hashtree/nostr';
-import { SimplePool, nip19 } from 'nostr-tools';
+import { nip19 } from 'nostr-tools';
 
 export const DEFAULT_ROOT_RESOLVE_TIMEOUT_MS = 15_000;
 export const DEFAULT_ROOT_RESOLVE_SETTLE_MS = 500;
@@ -113,6 +113,111 @@ function updateLatestRecord(current: RootRecord | null, event: NostrEvent, cid: 
   return { event, cid };
 }
 
+function createSubscriptionId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `htree-root-${Math.random().toString(16).slice(2)}`;
+}
+
+function parseRelayMessage(data: unknown): unknown[] | null {
+  if (typeof data !== 'string') {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(data);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function openRelaySubscriptions(
+  relays: string[],
+  filter: Record<string, unknown>,
+  handlers: {
+    onEvent?: (event: NostrEvent, relay: string) => void;
+    onEose?: (relay: string) => void;
+    onError?: (relay: string) => void;
+  },
+): { close(): Promise<void> } {
+  const subId = createSubscriptionId();
+  const sockets: WebSocket[] = [];
+  let closed = false;
+
+  for (const relay of relays) {
+    let socket: WebSocket | null = null;
+    try {
+      socket = new WebSocket(relay);
+    } catch {
+      handlers.onError?.(relay);
+      continue;
+    }
+
+    sockets.push(socket);
+
+    socket.onopen = () => {
+      if (closed) {
+        try {
+          socket?.close();
+        } catch {
+          // Ignore close errors.
+        }
+        return;
+      }
+
+      try {
+        socket.send(JSON.stringify(['REQ', subId, filter]));
+      } catch {
+        handlers.onError?.(relay);
+      }
+    };
+
+    socket.onerror = () => {
+      handlers.onError?.(relay);
+    };
+
+    socket.onmessage = (event) => {
+      const message = parseRelayMessage(event.data);
+      if (!message || message[1] !== subId) {
+        return;
+      }
+
+      if (message[0] === 'EVENT' && message[2] && typeof message[2] === 'object') {
+        handlers.onEvent?.(message[2] as NostrEvent, relay);
+        return;
+      }
+
+      if (message[0] === 'EOSE' || message[0] === 'CLOSED') {
+        handlers.onEose?.(relay);
+      }
+    };
+  }
+
+  return {
+    async close() {
+      if (closed) {
+        return;
+      }
+      closed = true;
+
+      for (const socket of sockets) {
+        try {
+          socket.send(JSON.stringify(['CLOSE', subId]));
+        } catch {
+          // Ignore close frame errors.
+        }
+        try {
+          socket.close();
+        } catch {
+          // Ignore socket close errors.
+        }
+      }
+    },
+  };
+}
+
 async function resolvePreferredCid(
   tree: Pick<HashTree, 'resolvePath'> | null,
   exactRecord: RootRecord | null,
@@ -150,87 +255,64 @@ async function queryLatestTreeRoot(
     return null;
   }
 
-  const pool = new SimplePool();
-
   return await new Promise<RootRecord | null>((resolve) => {
     let closed = false;
     let latestRecord: RootRecord | null = null;
     let settleTimer: ReturnType<typeof setTimeout> | null = null;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    let subscription: { close(reason?: string): void | Promise<void> } | null = null;
 
-    const finish = (record: RootRecord | null): void => {
-      if (closed) {
-        return;
-      }
-      closed = true;
-
-      if (settleTimer) {
-        clearTimeout(settleTimer);
-      }
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
-
-      Promise.resolve(subscription?.close('resolved'))
-        .catch(() => undefined)
-        .finally(() => {
-          try {
-            pool.close(relays);
-          } catch {
-            // Ignore close errors.
-          }
-          try {
-            pool.destroy();
-          } catch {
-            // Ignore destroy errors.
-          }
-          resolve(record);
-        });
-    };
-
-    const scheduleFinish = (): void => {
-      if (!latestRecord) {
-        return;
-      }
-      if (settleTimer) {
-        clearTimeout(settleTimer);
-      }
-      settleTimer = setTimeout(() => {
-        finish(latestRecord);
-      }, settleMs);
-    };
-
-    timeoutId = setTimeout(() => {
-      finish(latestRecord);
-    }, timeoutMs);
-
-    subscription = pool.subscribeMany(relays, {
+    const subscription = openRelaySubscriptions(relays, {
       kinds: [30078],
       authors: [pubkey],
       '#d': [treeName],
       limit: MAX_TREE_ROOT_EVENTS,
     }, {
-      maxWait: timeoutMs,
-      onevent(event) {
+      onEvent(event) {
         const parsed = parseHashtreeRootEvent(event as Parameters<typeof parseHashtreeRootEvent>[0]);
         if (!parsed || parsed.treeName !== treeName) {
           return;
         }
 
         const nextRecord = updateLatestRecord(latestRecord, event, parsed.rootCid);
-        if (nextRecord) {
-          latestRecord = nextRecord;
-          scheduleFinish();
+        if (!nextRecord) {
+          return;
         }
+
+        latestRecord = nextRecord;
+        if (settleTimer) {
+          clearTimeout(settleTimer);
+        }
+        settleTimer = setTimeout(() => {
+          finish(latestRecord);
+        }, settleMs);
       },
-      oneose() {
-        // Ignore faster relay EOSE notifications. A slower relay may still deliver a newer replaceable event.
+      onError() {
+        // Ignore individual relay failures and let timeout decide.
       },
-      onclose() {
-        // Ignore relay close notifications and let settle/timeout windows decide.
+      onEose() {
+        // Slower relays may still provide a newer replaceable event.
       },
     });
+
+    const finish = (record: RootRecord | null): void => {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      if (settleTimer) {
+        clearTimeout(settleTimer);
+      }
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      void subscription.close().finally(() => {
+        resolve(record);
+      });
+    };
+
+    timeoutId = setTimeout(() => {
+      finish(latestRecord);
+    }, timeoutMs);
   });
 }
 
@@ -255,10 +337,9 @@ export async function watchRootPathFromRelays(
   }
 
   const { exactTreeName, treeName, subPath, watchTreeNames } = parseRootLookupPath(path);
-  const pool = new SimplePool();
   let exactRecord: RootRecord | null = null;
   let treeRecord: RootRecord | null = null;
-  let subscription: { close(reason?: string): void | Promise<void> } | null = null;
+  let subscription: { close(): Promise<void> } | null = null;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   let resolveTicket = 0;
@@ -279,17 +360,7 @@ export async function watchRootPathFromRelays(
       clearTimeout(timeoutId);
     }
 
-    await Promise.resolve(subscription?.close('resolved')).catch(() => undefined);
-    try {
-      pool.close(relayList);
-    } catch {
-      // Ignore close errors.
-    }
-    try {
-      pool.destroy();
-    } catch {
-      // Ignore destroy errors.
-    }
+    await Promise.resolve(subscription?.close()).catch(() => undefined);
   };
 
   const emitCurrent = async (mode: 'initial' | 'update'): Promise<CID | null> => {
@@ -323,72 +394,77 @@ export async function watchRootPathFromRelays(
     return cid;
   };
 
-  const initialCid = await new Promise<CID | null>((resolve) => {
-    const settleInitial = (): void => {
-      if (settleTimer) {
-        clearTimeout(settleTimer);
+  const settleInitial = (): void => {
+    if (settleTimer) {
+      clearTimeout(settleTimer);
+    }
+    settleTimer = setTimeout(() => {
+      void emitCurrent('initial').then((cid) => {
+        if (!closed) {
+          void onUpdate(cid);
+        }
+      });
+    }, settleMs);
+  };
+
+  timeoutId = setTimeout(() => {
+    void emitCurrent('initial').then((cid) => {
+      if (!closed) {
+        void onUpdate(cid);
       }
-      settleTimer = setTimeout(() => {
-        void emitCurrent('initial').then(resolve);
-      }, settleMs);
-    };
-
-    timeoutId = setTimeout(() => {
-      void emitCurrent('initial').then(resolve);
-    }, timeoutMs);
-
-    subscription = pool.subscribeMany(relayList, {
-      kinds: [30078],
-      authors: [pubkey],
-      '#d': watchTreeNames,
-      limit: Math.max(MAX_TREE_ROOT_EVENTS, watchTreeNames.length * MAX_TREE_ROOT_EVENTS),
-    }, {
-      maxWait: timeoutMs,
-      onevent(event) {
-        const parsed = parseHashtreeRootEvent(event as Parameters<typeof parseHashtreeRootEvent>[0]);
-        if (!parsed) {
-          return;
-        }
-
-        let updated = false;
-        if (parsed.treeName === exactTreeName) {
-          const nextRecord = updateLatestRecord(exactRecord, event, parsed.rootCid);
-          if (nextRecord) {
-            exactRecord = nextRecord;
-            updated = true;
-          }
-        }
-
-        if (parsed.treeName === treeName) {
-          const nextRecord = updateLatestRecord(treeRecord, event, parsed.rootCid);
-          if (nextRecord) {
-            treeRecord = nextRecord;
-            updated = true;
-          }
-        }
-
-        if (!updated) {
-          return;
-        }
-
-        if (!initialResolved) {
-          settleInitial();
-          return;
-        }
-
-        void emitCurrent('update');
-      },
-      oneose() {
-        // Ignore faster relay EOSE notifications. The live watch keeps listening.
-      },
-      onclose() {
-        // Ignore relay close notifications. Other relays may still be active.
-      },
     });
+  }, timeoutMs);
+
+  subscription = openRelaySubscriptions(relayList, {
+    kinds: [30078],
+    authors: [pubkey],
+    '#d': watchTreeNames,
+    limit: Math.max(MAX_TREE_ROOT_EVENTS, watchTreeNames.length * MAX_TREE_ROOT_EVENTS),
+  }, {
+    onEvent(event) {
+      const parsed = parseHashtreeRootEvent(event as Parameters<typeof parseHashtreeRootEvent>[0]);
+      if (!parsed) {
+        return;
+      }
+
+      let updated = false;
+      if (parsed.treeName === exactTreeName) {
+        const nextRecord = updateLatestRecord(exactRecord, event, parsed.rootCid);
+        if (nextRecord) {
+          exactRecord = nextRecord;
+          updated = true;
+        }
+      }
+
+      if (parsed.treeName === treeName) {
+        const nextRecord = updateLatestRecord(treeRecord, event, parsed.rootCid);
+        if (nextRecord) {
+          treeRecord = nextRecord;
+          updated = true;
+        }
+      }
+
+      if (!updated) {
+        return;
+      }
+
+      if (!initialResolved) {
+        settleInitial();
+        return;
+      }
+
+      void emitCurrent('update');
+    },
+    onEose() {
+      // Ignore faster relay EOSE notifications. The live watch keeps listening.
+    },
+    onError() {
+      // Ignore relay close notifications. Other relays may still be active.
+    },
   });
 
   return {
-    initialCid,
+    initialCid: null,
     close,
   };
 }

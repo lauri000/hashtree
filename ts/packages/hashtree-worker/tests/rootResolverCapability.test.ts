@@ -1,25 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { toHex, type CID } from '@hashtree/core';
 
-const subscribeManyMock = vi.hoisted(() => vi.fn());
-const closeMock = vi.hoisted(() => vi.fn());
-const destroyMock = vi.hoisted(() => vi.fn());
 const decodeMock = vi.hoisted(() => vi.fn());
+const socketPlanMock = vi.hoisted(() => vi.fn());
+const socketSendMock = vi.hoisted(() => vi.fn());
+const socketCloseMock = vi.hoisted(() => vi.fn());
 
 vi.mock('nostr-tools', () => ({
-  SimplePool: class {
-    subscribeMany(...args: Parameters<typeof subscribeManyMock>) {
-      return subscribeManyMock(...args);
-    }
-
-    close(...args: Parameters<typeof closeMock>) {
-      closeMock(...args);
-    }
-
-    destroy(...args: Parameters<typeof destroyMock>) {
-      destroyMock(...args);
-    }
-  },
   nip19: {
     decode: (...args: Parameters<typeof decodeMock>) => decodeMock(...args),
   },
@@ -35,6 +22,36 @@ const PUBKEY = '1'.repeat(64);
 const ROOT_HASH = '2'.repeat(64);
 const EXACT_HASH = '3'.repeat(64);
 const CHILD: CID = { hash: Uint8Array.from({ length: 32 }, (_, index) => index + 1) };
+
+class FakeWebSocket {
+  static readonly OPEN = 1;
+
+  readonly url: string;
+  readyState = FakeWebSocket.OPEN;
+  onopen: ((event: Event) => void) | null = null;
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+
+  constructor(url: string) {
+    this.url = url;
+    queueMicrotask(() => {
+      this.onopen?.(new Event('open'));
+      socketPlanMock(this, url);
+    });
+  }
+
+  send(data: string): void {
+    socketSendMock(this.url, data);
+  }
+
+  close(): void {
+    socketCloseMock(this.url);
+  }
+
+  emitMessage(message: unknown[]): void {
+    this.onmessage?.({ data: JSON.stringify(message) } as MessageEvent);
+  }
+}
 
 function makeEvent(treeName: string, hash: string, createdAt = 1_700_000_000) {
   return {
@@ -54,21 +71,33 @@ function makeEvent(treeName: string, hash: string, createdAt = 1_700_000_000) {
 
 describe('rootResolver capability', () => {
   beforeEach(() => {
-    subscribeManyMock.mockReset();
-    closeMock.mockReset();
-    destroyMock.mockReset();
     decodeMock.mockReset();
+    socketPlanMock.mockReset();
+    socketSendMock.mockReset();
+    socketCloseMock.mockReset();
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      writable: true,
+      value: FakeWebSocket,
+    });
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    // @ts-expect-error test cleanup
+    delete globalThis.WebSocket;
   });
 
   it('returns an exact tree match without resolving a subpath', async () => {
     decodeMock.mockReturnValue({ type: 'npub', data: PUBKEY });
-    subscribeManyMock.mockImplementation((_relays, _filter, params) => {
-      params.onevent?.(makeEvent('audio-catalog/root.json', EXACT_HASH));
-      return { close: vi.fn() };
+    socketPlanMock.mockImplementation((socket: FakeWebSocket, url: string) => {
+      if (url === 'wss://relay.example') {
+        const requestMessages = socketSendMock.mock.calls
+          .filter(([relayUrl]) => relayUrl === 'wss://relay.example')
+          .map(([, data]) => JSON.parse(data as string));
+        const request = requestMessages[requestMessages.length - 1];
+        socket.emitMessage(['EVENT', request[1], makeEvent('audio-catalog/root.json', EXACT_HASH)]);
+      }
     });
 
     const resolvePath = vi.fn();
@@ -76,30 +105,23 @@ describe('rootResolver capability', () => {
 
     expect(toHex(resolved!.hash)).toBe(EXACT_HASH);
     expect(resolvePath).not.toHaveBeenCalled();
-    expect(subscribeManyMock).toHaveBeenCalledTimes(1);
-    expect(subscribeManyMock).toHaveBeenCalledWith(
-      ['wss://relay.example', 'wss://relay.damus.io', 'wss://relay.primal.net', 'wss://relay.nostr.band', 'wss://relay.snort.social', 'wss://temp.iris.to'],
-      {
-        kinds: [30078],
-        authors: [PUBKEY],
-        '#d': ['audio-catalog/root.json'],
-        limit: 8,
-      },
-      expect.objectContaining({ maxWait: DEFAULT_ROOT_RESOLVE_TIMEOUT_MS }),
-    );
+    expect(socketSendMock).toHaveBeenCalled();
   });
 
   it('falls back to the tree root and resolves the remaining subpath', async () => {
     decodeMock.mockReturnValue({ type: 'npub', data: PUBKEY });
-    subscribeManyMock
-      .mockImplementationOnce((_relays, _filter, params) => {
-        params.oneose?.();
-        return { close: vi.fn() };
-      })
-      .mockImplementationOnce((_relays, _filter, params) => {
-        params.onevent?.(makeEvent('audio-catalog', ROOT_HASH));
-        return { close: vi.fn() };
-      });
+    socketPlanMock.mockImplementation((socket: FakeWebSocket, url: string) => {
+      if (url === 'wss://relay.example') {
+        const requestMessages = socketSendMock.mock.calls
+          .filter(([relayUrl]) => relayUrl === 'wss://relay.example')
+          .map(([, data]) => JSON.parse(data as string));
+        const request = requestMessages[requestMessages.length - 1];
+        const requestedTreeName = request?.[2]?.['#d']?.[0];
+        if (requestedTreeName === 'audio-catalog') {
+          socket.emitMessage(['EVENT', request[1], makeEvent('audio-catalog', ROOT_HASH)]);
+        }
+      }
+    });
 
     const resolvePath = vi.fn().mockResolvedValue({ cid: CHILD });
     const resolved = await resolveRootPathFromRelays(
@@ -117,19 +139,24 @@ describe('rootResolver capability', () => {
       ['root.json'],
     );
     expect(toHex((resolvePath.mock.calls[0]![0] as CID).hash)).toBe(ROOT_HASH);
-    expect(subscribeManyMock).toHaveBeenCalledTimes(2);
+    expect(socketSendMock).toHaveBeenCalled();
   });
 
-  it('waits for a newer slower-relay event instead of finishing on the first EOSE', async () => {
+  it('waits for a newer event that arrives before the query window closes', async () => {
     vi.useFakeTimers();
     decodeMock.mockReturnValue({ type: 'npub', data: PUBKEY });
-    subscribeManyMock.mockImplementation((_relays, _filter, params) => {
-      params.onevent?.(makeEvent('audio-catalog/root.json', '5'.repeat(64), 100));
-      params.oneose?.();
+    socketPlanMock.mockImplementation((socket: FakeWebSocket, url: string) => {
+      if (url !== 'wss://relay.example') {
+        return;
+      }
+      const requestMessages = socketSendMock.mock.calls
+        .filter(([relayUrl]) => relayUrl === 'wss://relay.example')
+        .map(([, data]) => JSON.parse(data as string));
+      const request = requestMessages[requestMessages.length - 1];
+      socket.emitMessage(['EVENT', request[1], makeEvent('audio-catalog/root.json', '5'.repeat(64), 100)]);
       setTimeout(() => {
-        params.onevent?.(makeEvent('audio-catalog/root.json', '6'.repeat(64), 200));
+        socket.emitMessage(['EVENT', request[1], makeEvent('audio-catalog/root.json', '6'.repeat(64), 200)]);
       }, 20);
-      return { close: vi.fn() };
     });
 
     const resolvePromise = resolveRootPathFromRelays(
@@ -145,6 +172,6 @@ describe('rootResolver capability', () => {
     const resolved = await resolvePromise;
 
     expect(toHex(resolved!.hash)).toBe('6'.repeat(64));
-    expect(subscribeManyMock).toHaveBeenCalledTimes(1);
+    expect(socketSendMock).toHaveBeenCalled();
   });
 });

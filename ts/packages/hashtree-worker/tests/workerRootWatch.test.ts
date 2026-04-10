@@ -242,4 +242,56 @@ describe('worker root resolution message flow', () => {
       id: 'unwatch-1',
     });
   });
+
+  it('starts root watches even when the initial cid is not ready yet', async () => {
+    watchRootPathFromRelaysMock.mockResolvedValue({
+      initialCid: null,
+      close: closeWatchMock,
+    });
+    await import('../src/worker.js');
+
+    const ctx = globalThis.self as {
+      onmessage: ((event: { data: unknown }) => void) | null;
+    };
+
+    ctx.onmessage?.({
+      data: {
+        type: 'init',
+        id: 'init-3',
+        config: {
+          relays: ['wss://relay.example'],
+        },
+      },
+    });
+    await flush();
+
+    ctx.onmessage?.({
+      data: {
+        type: 'watchRoot',
+        id: 'watch-2',
+        npub: 'npub1example',
+        path: 'audio-catalog/root.json',
+        timeoutMs: 4_500,
+        settleMs: 500,
+      },
+    });
+    await flush();
+
+    const started = postMessageMock.mock.calls
+      .map((call) => call[0] as { type?: string; watchId?: string; cid?: CID })
+      .find((message) => message.type === 'rootWatchStarted' && message.watchId);
+    expect(started?.watchId).toBeTruthy();
+    expect(started).not.toHaveProperty('cid');
+
+    const onUpdate = watchRootPathFromRelaysMock.mock.calls[0]?.[4] as ((cid: CID | null) => void) | undefined;
+    expect(onUpdate).toBeTypeOf('function');
+    onUpdate?.(ROOT);
+    await flush();
+
+    expect(postMessageMock).toHaveBeenCalledWith({
+      type: 'rootUpdate',
+      watchId: started!.watchId,
+      cid: ROOT,
+    });
+  });
 });

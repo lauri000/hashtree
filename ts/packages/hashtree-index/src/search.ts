@@ -265,6 +265,10 @@ export class SearchIndex {
     return this.btree.merge(base, other, preferOther);
   }
 
+  async build(items: Iterable<[string, string]>): Promise<CID | null> {
+    return this.btree.build(items);
+  }
+
   // ============ CID Link Methods ============
 
   /**
@@ -297,6 +301,10 @@ export class SearchIndex {
     }
 
     return newRoot!;
+  }
+
+  async buildLinks(items: Iterable<[string, CID]>): Promise<CID | null> {
+    return this.btree.buildLinks(items);
   }
 
   /**

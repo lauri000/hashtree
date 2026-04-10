@@ -50,6 +50,39 @@ class FakeWorker {
   }
 }
 
+class DelayedRootWatchWorker {
+  onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+  private watchId = 'watch-1';
+
+  postMessage(message: WorkerRequest, _transfer?: Transferable[]): void {
+    if (message.type === 'init') {
+      this.emit({ type: 'ready', id: message.id });
+      return;
+    }
+
+    if (message.type === 'watchRoot') {
+      this.emit({ type: 'rootWatchStarted', id: message.id, watchId: this.watchId });
+      queueMicrotask(() => {
+        this.emit({ type: 'rootUpdate', watchId: this.watchId, cid: ROOT });
+      });
+      return;
+    }
+
+    if (message.type === 'unwatchRoot' || message.type === 'close') {
+      this.emit({ type: 'void', id: message.id });
+    }
+  }
+
+  terminate(): void {
+    // no-op
+  }
+
+  private emit(message: WorkerResponse): void {
+    this.onmessage?.({ data: message } as MessageEvent<WorkerResponse>);
+  }
+}
+
 describe('HashtreeWorkerClient resolveRoot', () => {
   it('returns CID results from the worker', async () => {
     const client = new HashtreeWorkerClient(FakeWorker as unknown as new () => Worker);
@@ -67,6 +100,21 @@ describe('HashtreeWorkerClient resolveRoot', () => {
     await Promise.resolve();
 
     expect(updates).toEqual([ROOT, null]);
+
+    await unwatch();
+    await client.close();
+  });
+
+  it('streams delayed initial root updates without emitting a synthetic null first', async () => {
+    const client = new HashtreeWorkerClient(DelayedRootWatchWorker as unknown as new () => Worker);
+    const updates: Array<CID | null> = [];
+    const unwatch = await client.watchRoot('npub1example', 'audio-catalog/root.json', (cid) => {
+      updates.push(cid);
+    });
+
+    await Promise.resolve();
+
+    expect(updates).toEqual([ROOT]);
 
     await unwatch();
     await client.close();

@@ -151,6 +151,90 @@ export class BTree {
     return result;
   }
 
+  async build(items: Iterable<[string, string]>): Promise<CID | null> {
+    const sorted = [...items];
+    if (sorted.length === 0) {
+      return null;
+    }
+
+    sorted.sort((left, right) => left[0].localeCompare(right[0]));
+
+    const deduped: Array<[string, string]> = [];
+    for (const [key, value] of sorted) {
+      const last = deduped[deduped.length - 1];
+      if (last && last[0] === key) {
+        last[1] = value;
+        continue;
+      }
+      deduped.push([key, value]);
+    }
+
+    let level: BuiltNode[] = [];
+    for (let index = 0; index < deduped.length; index += this.maxKeys) {
+      const chunk = deduped.slice(index, index + this.maxKeys);
+      level.push({
+        firstKey: chunk[0][0],
+        cid: await this.createLeaf(chunk),
+      });
+    }
+
+    while (level.length > 1) {
+      const nextLevel: BuiltNode[] = [];
+      for (let index = 0; index < level.length; index += this.maxKeys) {
+        const chunk = level.slice(index, index + this.maxKeys);
+        nextLevel.push({
+          firstKey: chunk[0].firstKey,
+          cid: await this.createInternalNode(chunk),
+        });
+      }
+      level = nextLevel;
+    }
+
+    return level[0]?.cid ?? null;
+  }
+
+  async buildLinks(items: Iterable<[string, CID]>): Promise<CID | null> {
+    const sorted = [...items];
+    if (sorted.length === 0) {
+      return null;
+    }
+
+    sorted.sort((left, right) => left[0].localeCompare(right[0]));
+
+    const deduped: Array<[string, CID]> = [];
+    for (const [key, cid] of sorted) {
+      const last = deduped[deduped.length - 1];
+      if (last && last[0] === key) {
+        last[1] = cid;
+        continue;
+      }
+      deduped.push([key, cid]);
+    }
+
+    let level: BuiltNode[] = [];
+    for (let index = 0; index < deduped.length; index += this.maxKeys) {
+      const chunk = deduped.slice(index, index + this.maxKeys);
+      level.push({
+        firstKey: chunk[0][0],
+        cid: await this.createLeafWithLink(chunk),
+      });
+    }
+
+    while (level.length > 1) {
+      const nextLevel: BuiltNode[] = [];
+      for (let index = 0; index < level.length; index += this.maxKeys) {
+        const chunk = level.slice(index, index + this.maxKeys);
+        nextLevel.push({
+          firstKey: chunk[0].firstKey,
+          cid: await this.createInternalNode(chunk),
+        });
+      }
+      level = nextLevel;
+    }
+
+    return level[0]?.cid ?? null;
+  }
+
   // ============ Private Link Helpers ============
 
   private cidEquals(a: CID, b: CID): boolean {
@@ -435,14 +519,27 @@ export class BTree {
   }
 
   private async createLeaf(items: Array<[string, string]>): Promise<CID> {
-    let node = (await this.tree.putDirectory([])).cid;
-
+    const entries: TreeEntry[] = [];
     for (const [key, value] of items) {
-      const { cid: valueCid, size } = await this.tree.putFile(new TextEncoder().encode(value));
-      node = await this.tree.setEntry(node, [], escapeKey(key), valueCid, size, LinkType.Blob);
+      const { cid, size } = await this.tree.putFile(new TextEncoder().encode(value));
+      entries.push({
+        name: escapeKey(key),
+        cid,
+        size,
+        type: LinkType.Blob,
+      });
     }
+    return (await this.tree.putDirectory(entries)).cid;
+  }
 
-    return node;
+  private async createInternalNode(children: BuiltNode[]): Promise<CID> {
+    const entries: TreeEntry[] = children.map((child) => ({
+      name: escapeKey(child.firstKey),
+      cid: child.cid,
+      size: 0,
+      type: LinkType.Dir,
+    }));
+    return (await this.tree.putDirectory(entries)).cid;
   }
 
   async delete(root: CID, key: string): Promise<CID | null> {
@@ -576,6 +673,11 @@ interface SplitResult {
   right: CID;
   leftFirstKey: string;
   rightFirstKey: string;
+}
+
+interface BuiltNode {
+  firstKey: string;
+  cid: CID;
 }
 
 export function escapeKey(key: string): string {

@@ -13,6 +13,19 @@ Pending npm version bump:
 - Added shared `.collection-manifest.json` helpers in `@hashtree/collection` so collection roots can publish and reload `schemaVersion`, item/projection formats, and optional schema references in a cross-runtime format.
 - Added `@hashtree/nostr` event-root publication of the shared collection manifest metadata plus TS/Rust interop coverage that compares the actual published metadata payloads.
 
+## 0.1.22 - 2026-04-10
+
+Changes since the previous npm package publish.
+
+### Fixed
+
+- Fixed `@hashtree/worker` root watches to start immediately instead of blocking client startup on the first relay resolution, and emit the first resolved root through the normal update channel when it arrives.
+- Fixed the published `@hashtree/worker` package manifest to depend on released `@hashtree/*` versions instead of leaking `workspace:*` ranges to npm consumers.
+
+### Improved
+
+- Improved `@hashtree/worker/client` root-watch behavior so delayed initial roots no longer produce a synthetic `null` callback before the first real update.
+
 ## 0.1.20 - 2026-04-10
 
 Changes since the previous npm package publish.

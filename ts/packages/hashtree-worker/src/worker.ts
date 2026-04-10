@@ -899,7 +899,12 @@ async function handleRequest(req: WorkerRequest): Promise<void> {
           req.settleMs,
         );
         activeRootWatches.set(watchId, { close: watch.close });
-        respond({ type: 'rootWatchStarted', id: req.id, watchId, cid: watch.initialCid ?? undefined });
+        respond({
+          type: 'rootWatchStarted',
+          id: req.id,
+          watchId,
+          ...(watch.initialCid ? { cid: watch.initialCid } : {}),
+        });
       } catch (err) {
         respond({ type: 'rootWatchStarted', id: req.id, watchId: '', error: getErrorMessage(err) });
       }
