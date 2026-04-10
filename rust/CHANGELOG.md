@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.31 - 2026-04-10
+
+Changes since the `0.2.30` crates.io release.
+
+### Added
+
+- Added a shared `.collection-manifest.json` contract for published collection roots, so peers can inspect `schemaVersion`, item/projection formats, and optional schema references directly from the root.
+
+### Improved
+
+- Aligned Rust and TypeScript `hashtree-collection` / `hashtree-nostr` roots around the same published collection manifest metadata and added interop coverage that compares the actual emitted metadata payloads.
+
+### Fixed
+
+- Fixed release publishing safeguards so the generated installer is only exposed when the full archive set is present, and release validation now derives the canonical upload npub from the documented install command.
+- Fixed macOS release builds on Apple Silicon hosts so Intel macOS archives can still be produced for the published release set.
+
 ## 0.2.30 - 2026-04-10
 
 Changes since the `0.2.29` crates.io release.
