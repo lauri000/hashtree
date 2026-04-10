@@ -55,6 +55,8 @@ describe('@hashtree/collection', () => {
 
     let source = new CollectionSource(store, writer.manifest());
     expect(await source.get('song-a')).toEqual(cidFromSeed(1));
+    expect(await source.count()).toBe(2);
+    expect((await source.queryById()).map((result) => result.key)).toEqual(['song-a', 'song-b']);
     expect((await source.search('songs', 'midnight')).map((result) => result.id)).toEqual(['song-a']);
     expect((await source.queryIndex('artist', { prefix: 'artist:ada' })).map((result) => result.key)).toEqual(['artist:ada']);
     expect(source.manifest.itemCount).toBe(2);
@@ -62,6 +64,8 @@ describe('@hashtree/collection', () => {
     await writer.delete(songA);
     source = new CollectionSource(store, writer.manifest());
     expect(await source.get('song-a')).toBeNull();
+    expect(await source.count()).toBe(1);
+    expect((await source.queryById()).map((result) => result.key)).toEqual(['song-b']);
     expect(await source.search('songs', 'midnight')).toEqual([]);
     expect(await source.queryIndex('artist', { prefix: 'artist:ada' })).toEqual([]);
     expect(source.manifest.itemCount).toBe(1);

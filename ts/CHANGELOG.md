@@ -2,7 +2,13 @@
 
 ## Unreleased
 
-No published-package changes have landed since `@hashtree/worker@0.1.20` on 2026-04-10, so there is no pending npm version bump right now.
+Pending npm version bump:
+
+- `@hashtree/collection@0.1.1`
+
+### Added
+
+- Added `CollectionSource.count()` and `CollectionSource.queryById(...)` so callers can enumerate `by-id` entries and perform prefix-limited ID queries without reading internal index objects directly.
 
 ## 0.1.20 - 2026-04-10
 

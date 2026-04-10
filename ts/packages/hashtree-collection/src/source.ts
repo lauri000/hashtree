@@ -41,6 +41,39 @@ export class CollectionSource {
     return await this.byIdIndex.getLink(this.byIdRoot, id);
   }
 
+  async count(): Promise<number> {
+    if (!this.byIdRoot) {
+      return 0;
+    }
+
+    let count = 0;
+    for await (const _entry of this.byIdIndex.linksEntries(this.byIdRoot)) {
+      count += 1;
+    }
+    return count;
+  }
+
+  async queryById(options: { prefix?: string; limit?: number } = {}): Promise<CollectionIndexLinkResult[]> {
+    if (!this.byIdRoot) {
+      return [];
+    }
+
+    const results: CollectionIndexLinkResult[] = [];
+    const limit = options.limit ?? Number.POSITIVE_INFINITY;
+    const iterator = options.prefix
+      ? this.byIdIndex.prefixLinks(this.byIdRoot, options.prefix)
+      : this.byIdIndex.linksEntries(this.byIdRoot);
+
+    for await (const [key, cid] of iterator) {
+      results.push({ key, cid });
+      if (results.length >= limit) {
+        break;
+      }
+    }
+
+    return results;
+  }
+
   async search(indexName: string, query: string, options: SearchOptions = {}): Promise<SearchLinkResult[]> {
     const manifestIndex = this.manifest.indexes[indexName];
     if (!manifestIndex || manifestIndex.kind !== 'search') {
