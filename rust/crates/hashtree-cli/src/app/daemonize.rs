@@ -3,7 +3,9 @@ use anyhow::Context;
 use anyhow::Result;
 use std::path::PathBuf;
 
-use super::util::{format_bytes, process_is_running};
+use super::util::format_bytes;
+#[cfg(unix)]
+use super::util::process_is_running;
 
 pub(crate) fn format_daemon_status(status: &serde_json::Value, include_header: bool) -> String {
     let mut lines = Vec::new();
