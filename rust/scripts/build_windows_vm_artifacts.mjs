@@ -127,14 +127,13 @@ function batchQuote(value) {
   return `"${String(value).replace(/"/g, '""')}"`
 }
 
-function writeWindowsBuildScript({
-  scriptPath,
+export function windowsBuildScriptLines({
   sharedRepoPath,
   guestRepoPath,
   sharedOutputDir,
 }) {
   const guestRepoValue = guestRepoPath || '%USERPROFILE%\\src\\hashtree'
-  const lines = [
+  return [
     '@echo off',
     'setlocal',
     `set "SHARED_REPO=${sharedRepoPath}"`,
@@ -142,6 +141,10 @@ function writeWindowsBuildScript({
     `set "SHARED_OUTPUT=${sharedOutputDir}"`,
     'for %%I in ("%GUEST_REPO%") do set "GUEST_ROOT=%%~dpI"',
     'if not exist "%GUEST_ROOT%" mkdir "%GUEST_ROOT%"',
+    'if exist "%GUEST_REPO%" rmdir /S /Q "%GUEST_REPO%"',
+    'if exist "%GUEST_REPO%" exit /b 20',
+    'mkdir "%GUEST_REPO%"',
+    'if errorlevel 1 exit /b %errorlevel%',
     'if not exist "%SHARED_OUTPUT%" mkdir "%SHARED_OUTPUT%"',
     'robocopy "%SHARED_REPO%" "%GUEST_REPO%" /E /XD "%SHARED_REPO%\\.git" "%SHARED_REPO%\\dist" "%SHARED_REPO%\\node_modules" "%SHARED_REPO%\\.pnpm-store" "%SHARED_REPO%\\artifacts" "%SHARED_REPO%\\rust\\target" "%SHARED_REPO%\\apps\\iris\\src-tauri\\target" /XF .env.release.local .env.zapstore.local',
     'if errorlevel 8 exit /b %errorlevel%',
@@ -171,7 +174,19 @@ function writeWindowsBuildScript({
     'copy /Y "%GUEST_REPO%\\rust\\target\\x86_64-pc-windows-msvc\\release\\git-remote-htree.exe" "%SHARED_OUTPUT%\\git-remote-htree.exe"',
     'if errorlevel 1 exit /b %errorlevel%',
   ]
+}
 
+function writeWindowsBuildScript({
+  scriptPath,
+  sharedRepoPath,
+  guestRepoPath,
+  sharedOutputDir,
+}) {
+  const lines = windowsBuildScriptLines({
+    sharedRepoPath,
+    guestRepoPath,
+    sharedOutputDir,
+  })
   writeFileSync(scriptPath, `${lines.join('\r\n')}\r\n`, 'utf8')
 }
 

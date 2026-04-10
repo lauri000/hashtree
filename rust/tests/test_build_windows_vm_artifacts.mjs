@@ -5,6 +5,7 @@ import {
   autoDetectWindowsVmName,
   defaultSharedWindowsPath,
   parseArgs,
+  windowsBuildScriptLines,
 } from '../scripts/build_windows_vm_artifacts.mjs'
 
 test('defaultSharedWindowsPath maps home-relative paths into Parallels shared folders', () => {
@@ -48,4 +49,20 @@ test('parseArgs reads overrides and defaults', () => {
     guestRepoPath: 'C:\\Users\\sirius\\src\\hashtree',
     help: false,
   })
+})
+
+test('windows build script recreates the guest repo before robocopy', () => {
+  const lines = windowsBuildScriptLines({
+    sharedRepoPath: 'C:\\Mac\\Home\\src\\hashtree',
+    guestRepoPath: 'C:\\Users\\sirius\\src\\hashtree',
+    sharedOutputDir: 'C:\\Mac\\Home\\src\\hashtree\\rust\\dist\\windows-vm-out',
+  })
+
+  const cleanupIndex = lines.indexOf('if exist "%GUEST_REPO%" rmdir /S /Q "%GUEST_REPO%"')
+  const mkdirIndex = lines.indexOf('mkdir "%GUEST_REPO%"')
+  const robocopyIndex = lines.findIndex((line) => line.startsWith('robocopy '))
+
+  assert.ok(cleanupIndex >= 0)
+  assert.ok(mkdirIndex > cleanupIndex)
+  assert.ok(robocopyIndex > mkdirIndex)
 })
