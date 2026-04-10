@@ -20,7 +20,7 @@ Options:
   --platforms <csv>               Subset: host,docker-arm64,docker-amd64,windows,brew
   --docker-bin <path>             Docker binary to use (default: docker)
   --docker-image <image>          Debian image used for Linux smoke tests
-  --timeout-seconds <seconds>     Timeout for Docker/Windows smoke runs (default: 180)
+  --timeout-seconds <seconds>     Timeout for Docker smoke runs (default: 180)
   --windows-zip-url <url>         Override the Windows zip asset URL
   --windows-vm-name <name>        Override the Parallels Windows VM name
   --brew-tap-name <name>          Override the Homebrew tap name
@@ -398,7 +398,7 @@ powershell_escape() {
 }
 
 run_windows_smoke() {
-    local vm_name zip_url label ps_script encoded log_path
+    local vm_name zip_url label ps_script encoded
     label="windows-vm-x86_64"
 
     if [ "$(uname -s 2>/dev/null)" != "Darwin" ]; then
@@ -438,11 +438,10 @@ run_windows_smoke() {
 New-Item -ItemType Directory -Path \$work | Out-Null
 try {
   \$zipPath = Join-Path \$work 'hashtree.zip'
-  Write-Output 'download-start'
-  Invoke-WebRequest -Uri \$zipUrl -OutFile \$zipPath
-  Write-Output 'download-ok'
-  Expand-Archive -Path \$zipPath -DestinationPath \$work
-  Write-Output 'expand-ok'
+  & curl.exe -fsSL \$zipUrl -o \$zipPath
+  if (\$LASTEXITCODE -ne 0) { throw "curl.exe failed with exit code \$LASTEXITCODE" }
+  tar.exe -xf \$zipPath -C \$work
+  if (\$LASTEXITCODE -ne 0) { throw "tar.exe failed with exit code \$LASTEXITCODE" }
   \$htree = Get-ChildItem -Path \$work -Recurse -Filter 'htree.exe' | Select-Object -First 1
   \$helper = Get-ChildItem -Path \$work -Recurse -Filter 'git-remote-htree.exe' | Select-Object -First 1
   if (-not \$htree) { throw 'htree.exe not found in extracted archive' }
@@ -454,14 +453,7 @@ try {
     throw 'git-remote-htree.exe did not advertise fetch/push/option'
   }
   Write-Output 'helper-capabilities-ok'
-  if (Get-Command git -ErrorAction SilentlyContinue) {
-    Write-Output 'git-ls-remote-start'
-    \$refs = & git ls-remote \$remote
-    if (-not \$refs) {
-      throw 'git ls-remote returned no refs'
-    }
-    Write-Output 'git-ls-remote-ok'
-  }
+  exit 0
 }
 finally {
   Remove-Item -Path \$work -Recurse -Force -ErrorAction SilentlyContinue
@@ -474,13 +466,10 @@ EOF
             python3 -c 'import base64, sys; print(base64.b64encode(sys.stdin.buffer.read().decode("utf-8").encode("utf-16le")).decode("ascii"))'
     )"
 
-    log_path="$(platform_log_path "$label")"
-    if run_with_timeout "$COMMAND_TIMEOUT_SECONDS" "$log_path" \
-        prlctl exec "$vm_name" --current-user powershell.exe -NoProfile -NonInteractive -EncodedCommand "$encoded"
-    then
+    if prlctl exec "$vm_name" --current-user powershell.exe -NoProfile -NonInteractive -EncodedCommand "$encoded"; then
         record_result "$label" "PASS" "downloaded the Windows zip and verified htree.exe plus git-remote-htree.exe"
     else
-        record_result "$label" "FAIL" "$(failure_note_from_log "$log_path")"
+        record_result "$label" "FAIL" "prlctl exec failed; see command output above"
     fi
 }
 

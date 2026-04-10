@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.32 - 2026-04-10
+
+Changes since the `0.2.31` crates.io release.
+
+### Improved
+
+- Added a real install-matrix smoke runner that exercises the documented install flow across the native host, Docker Linux targets, a Windows VM, and Homebrew with bounded Docker timeouts and per-platform logs where supported.
+
+### Fixed
+
+- Fixed `git-remote-htree` on Linux environments where LMDB initialization returns `ENOSYS` by falling back to filesystem-backed local storage instead of failing the remote-helper startup.
+- Improved the Windows VM smoke path to use the built-in `curl.exe` and `tar.exe` tools instead of the noisy `Invoke-WebRequest` path.
+
 ## 0.2.31 - 2026-04-10
 
 Changes since the `0.2.30` crates.io release.
