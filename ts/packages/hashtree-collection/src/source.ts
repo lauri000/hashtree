@@ -41,6 +41,20 @@ export class CollectionSource {
     return await this.byIdIndex.getLink(this.byIdRoot, id);
   }
 
+  async getIndexLink(indexName: string, key: string): Promise<CID | null> {
+    const manifestIndex = this.manifest.indexes[indexName];
+    if (!manifestIndex) {
+      return null;
+    }
+
+    const root = deserializeCid(manifestIndex.root);
+    if (!root) {
+      return null;
+    }
+
+    return await this.linkIndex.getLink(root, key);
+  }
+
   async count(): Promise<number> {
     if (!this.byIdRoot) {
       return 0;

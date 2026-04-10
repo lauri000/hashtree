@@ -166,6 +166,9 @@ importers:
 
   packages/hashtree-nostr:
     dependencies:
+      '@hashtree/collection':
+        specifier: workspace:*
+        version: link:../hashtree-collection
       '@hashtree/core':
         specifier: workspace:*
         version: link:../hashtree

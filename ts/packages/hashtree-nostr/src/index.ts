@@ -85,6 +85,29 @@ export {
 } from './events.js';
 
 export {
+  DEFAULT_NOSTR_EVENT_COLLECTION_SOURCE_ID,
+  collectionManifestToNostrEventManifest,
+  createNostrEventCollectionDefinition,
+  createNostrEventCollectionSource,
+  createNostrEventCollectionWriter,
+  nostrEventManifestToCollectionManifest,
+} from './eventCollection.js';
+
+export {
+  MANIFEST_BY_AUTHOR_KIND_TIME,
+  MANIFEST_BY_AUTHOR_TIME,
+  MANIFEST_BY_ID,
+  MANIFEST_BY_KIND_TIME,
+  MANIFEST_BY_TAG,
+  MANIFEST_BY_TIME,
+  MANIFEST_PARAMETERIZED_REPLACEABLE,
+  MANIFEST_REPLACEABLE,
+  parameterizedReplaceableKey,
+  replaceableKey,
+  tagPrefix,
+} from './eventKeys.js';
+
+export {
   encodeSignedNostrEventJson,
   decodeSignedNostrEventJson,
   storeSignedNostrEventSnapshot,

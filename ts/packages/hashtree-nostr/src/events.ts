@@ -1,19 +1,34 @@
 import { decode, encode } from '@msgpack/msgpack';
+import { CollectionSource, type CollectionManifest } from '@hashtree/collection';
 import { HashTree, LinkType, type CID, type Store, toHex, sha256 } from '@hashtree/core';
-import { BTree } from '@hashtree/index';
+import {
+  collectionManifestToNostrEventManifest,
+  createNostrEventCollectionWriter,
+  DEFAULT_NOSTR_EVENT_COLLECTION_SOURCE_ID,
+  nostrEventManifestToCollectionManifest,
+} from './eventCollection.js';
+import {
+  compareEvents,
+  createdAtFromIndexKey,
+  getDTag,
+  isParameterizedReplaceableKind,
+  isReplaceableKind,
+  MANIFEST_BY_AUTHOR_KIND_TIME,
+  MANIFEST_BY_AUTHOR_TIME,
+  MANIFEST_BY_ID,
+  MANIFEST_BY_KIND_TIME,
+  MANIFEST_BY_TAG,
+  MANIFEST_BY_TIME,
+  MANIFEST_PARAMETERIZED_REPLACEABLE,
+  MANIFEST_REPLACEABLE,
+  parameterizedReplaceableKey,
+  replaceableKey,
+  retainLatestReplaceableEvents,
+  tagPrefix,
+} from './eventKeys.js';
+import { assertStringArray, validateEventShape, validateHex64, validateKind } from './eventValidation.js';
 
 const EVENT_ENVELOPE_VERSION = 1;
-const MAX_U64 = (1n << 64n) - 1n;
-const HEX_64 = /^[0-9a-f]{64}$/;
-const HEX_128 = /^[0-9a-f]{128}$/;
-const MANIFEST_BY_ID = 'by-id';
-const MANIFEST_BY_AUTHOR_TIME = 'by-author-time';
-const MANIFEST_BY_AUTHOR_KIND_TIME = 'by-author-kind-time';
-const MANIFEST_BY_KIND_TIME = 'by-kind-time';
-const MANIFEST_BY_TIME = 'by-time';
-const MANIFEST_BY_TAG = 'by-tag';
-const MANIFEST_REPLACEABLE = 'replaceable';
-const MANIFEST_PARAMETERIZED_REPLACEABLE = 'parameterized-replaceable';
 
 export interface StoredNostrEvent {
   id: string;
@@ -51,59 +66,13 @@ async function computeCanonicalEventId(event: Omit<StoredNostrEvent, 'sig'>): Pr
   return toHex(await sha256(new TextEncoder().encode(payload)));
 }
 
-function padKind(kind: number): string {
-  return kind.toString(16).padStart(8, '0');
-}
-
-function reverseTimestamp(createdAt: number): string {
-  return (MAX_U64 - BigInt(createdAt)).toString(16).padStart(16, '0');
-}
-
-function isReplaceableKind(kind: number): boolean {
-  return kind === 0 || kind === 3 || (kind >= 10_000 && kind < 20_000);
-}
-
-function isParameterizedReplaceableKind(kind: number): boolean {
-  return kind >= 30_000 && kind < 40_000;
-}
-
-function getDTag(event: StoredNostrEvent): string | null {
-  for (const tag of event.tags) {
-    if (tag[0] === 'd' && typeof tag[1] === 'string' && tag[1].length > 0) {
-      return tag[1];
-    }
-  }
-
-  return null;
-}
-
-function compareEvents(a: StoredNostrEvent, b: StoredNostrEvent): number {
-  if (a.created_at !== b.created_at) {
-    return a.created_at - b.created_at;
-  }
-
-  return a.id.localeCompare(b.id);
-}
-
-function assertStringArray(tags: unknown): asserts tags is string[][] {
-  if (!Array.isArray(tags)) {
-    throw new Error('Nostr event tags must be an array');
-  }
-
-  for (const tag of tags) {
-    if (!Array.isArray(tag) || tag.some(value => typeof value !== 'string')) {
-      throw new Error('Nostr event tags must be an array of string arrays');
-    }
-  }
-}
-
 export class NostrEventStore {
+  private readonly store: Store;
   private readonly tree: HashTree;
-  private readonly index: BTree;
 
   constructor(store: Store) {
+    this.store = store;
     this.tree = new HashTree({ store });
-    this.index = new BTree(store);
   }
 
   encodeEvent(event: StoredNostrEvent): Uint8Array {
@@ -166,88 +135,64 @@ export class NostrEventStore {
   async add(root: CID | null, event: StoredNostrEvent): Promise<CID> {
     const normalized = await this.validateEvent(event);
     const manifest = await this.getManifest(root);
+    const decision = await this.resolveReplaceableDecision(manifest, normalized);
+    if (!decision.accept) {
+      if (!root) {
+        throw new Error('Rejecting replaceable event without an existing manifest root');
+      }
+      return root;
+    }
+
     const eventBytes = this.encodeEvent(normalized);
     const { cid: eventCid } = await this.tree.putFile(eventBytes);
+    const writer = this.collectionWriterFromManifest(manifest);
+    await writer.put(normalized, eventCid, {
+      previous: decision.replaced?.event,
+    });
 
-    const nextManifest: NostrEventManifest = {
-      byId: await this.index.insertLink(manifest.byId, normalized.id, eventCid),
-      byAuthorTime: await this.index.insertLink(
-        manifest.byAuthorTime,
-        this.authorTimeKey(normalized),
-        eventCid
-      ),
-      byAuthorKindTime: await this.index.insertLink(
-        manifest.byAuthorKindTime,
-        this.authorKindTimeKey(normalized),
-        eventCid
-      ),
-      byKindTime: await this.index.insertLink(
-        manifest.byKindTime,
-        this.kindTimeKey(normalized),
-        eventCid
-      ),
-      byTime: await this.index.insertLink(manifest.byTime, this.timeKey(normalized), eventCid),
-      byTag: manifest.byTag,
-      replaceable: manifest.replaceable,
-      parameterizedReplaceable: manifest.parameterizedReplaceable,
-    };
-
-    for (const tagKey of this.tagKeys(normalized)) {
-      nextManifest.byTag = await this.index.insertLink(nextManifest.byTag, tagKey, eventCid);
-    }
-
-    if (isReplaceableKind(normalized.kind)) {
-      nextManifest.replaceable = await this.upsertWinner(
-        manifest.replaceable,
-        this.replaceableKey(normalized.pubkey, normalized.kind),
-        normalized,
-        eventCid
-      );
-    }
-
-    if (isParameterizedReplaceableKind(normalized.kind)) {
-      const dTag = getDTag(normalized);
-      if (dTag) {
-        nextManifest.parameterizedReplaceable = await this.upsertWinner(
-          manifest.parameterizedReplaceable,
-          this.parameterizedReplaceableKey(normalized.pubkey, normalized.kind, dTag),
-          normalized,
-          eventCid
-        );
-      }
-    }
-
+    const nextManifest = collectionManifestToNostrEventManifest(writer.manifest());
     const manifestRoot = await this.writeManifest(nextManifest);
     if (!manifestRoot) {
       throw new Error('Failed to create Nostr event manifest');
+    }
+
+    if (decision.replaced) {
+      await this.store.delete(decision.replaced.cid.hash);
     }
 
     return manifestRoot;
   }
 
   async build(root: CID | null, events: StoredNostrEvent[]): Promise<CID | null> {
-    const normalized = await Promise.all(events.map(event => this.validateEvent(event)));
+    const normalized = retainLatestReplaceableEvents(
+      await Promise.all(events.map((event) => this.validateEvent(event))),
+    );
     normalized.sort(compareEvents);
 
-    let current = root;
-    for (const event of normalized) {
-      current = await this.add(current, event);
+    if (normalized.length === 0) {
+      return root;
     }
 
-    return current;
+    if (root) {
+      let current = root;
+      for (const event of normalized) {
+        current = await this.add(current, event);
+      }
+      return current;
+    }
+
+    const writer = this.collectionWriterFromManifest(this.emptyManifest());
+    await writer.rebuild(await Promise.all(normalized.map(async (event) => {
+      const { cid } = await this.tree.putFile(this.encodeEvent(event));
+      return { item: event, cid };
+    })));
+
+    return await this.writeManifest(collectionManifestToNostrEventManifest(writer.manifest()));
   }
 
   async getById(root: CID | null, eventId: string): Promise<StoredNostrEvent | null> {
-    if (!HEX_64.test(eventId)) {
-      throw new Error('Event id must be a lowercase 64-character hex string');
-    }
-
-    const manifest = await this.getManifest(root);
-    if (!manifest.byId) {
-      return null;
-    }
-
-    const eventCid = await this.index.getLink(manifest.byId, eventId);
+    const source = this.collectionSourceFromManifest(await this.getManifest(root));
+    const eventCid = await source.get(validateHex64(eventId, 'event id'));
     if (!eventCid) {
       return null;
     }
@@ -256,12 +201,12 @@ export class NostrEventStore {
   }
 
   async listByAuthor(root: CID | null, pubkey: string, options: ListEventsOptions = {}): Promise<StoredNostrEvent[]> {
-    const manifest = await this.getManifest(root);
-    if (!manifest.byAuthorTime) {
-      return [];
-    }
-
-    return this.collectEvents(manifest.byAuthorTime, `${this.validateHex64(pubkey, 'pubkey')}:`, options);
+    return this.collectEvents(
+      this.collectionSourceFromManifest(await this.getManifest(root)),
+      MANIFEST_BY_AUTHOR_TIME,
+      `${validateHex64(pubkey, 'pubkey')}:`,
+      options,
+    );
   }
 
   async listByAuthorAndKind(
@@ -270,39 +215,31 @@ export class NostrEventStore {
     kind: number,
     options: ListEventsOptions = {}
   ): Promise<StoredNostrEvent[]> {
-    const manifest = await this.getManifest(root);
-    if (!manifest.byAuthorKindTime) {
-      return [];
-    }
-
     return this.collectEvents(
-      manifest.byAuthorKindTime,
-      `${this.validateHex64(pubkey, 'pubkey')}:${padKind(this.validateKind(kind))}:`,
-      options
+      this.collectionSourceFromManifest(await this.getManifest(root)),
+      MANIFEST_BY_AUTHOR_KIND_TIME,
+      `${validateHex64(pubkey, 'pubkey')}:${validateKind(kind).toString(16).padStart(8, '0')}:`,
+      options,
     );
   }
 
   async getReplaceable(root: CID | null, pubkey: string, kind: number): Promise<StoredNostrEvent | null> {
-    const manifest = await this.getManifest(root);
-    if (!manifest.replaceable) {
-      return null;
-    }
-
-    const eventCid = await this.index.getLink(
-      manifest.replaceable,
-      this.replaceableKey(this.validateHex64(pubkey, 'pubkey'), this.validateKind(kind))
+    const source = this.collectionSourceFromManifest(await this.getManifest(root));
+    const eventCid = await source.getIndexLink(
+      MANIFEST_REPLACEABLE,
+      replaceableKey(validateHex64(pubkey, 'pubkey'), validateKind(kind)),
     );
 
     return eventCid ? this.readStoredEvent(eventCid) : null;
   }
 
   async listRecent(root: CID | null, options: ListEventsOptions = {}): Promise<StoredNostrEvent[]> {
-    const manifest = await this.getManifest(root);
-    if (!manifest.byTime) {
-      return [];
-    }
-
-    return this.collectEvents(manifest.byTime, '', options);
+    return this.collectEvents(
+      this.collectionSourceFromManifest(await this.getManifest(root)),
+      MANIFEST_BY_TIME,
+      '',
+      options,
+    );
   }
 
   async listByTag(
@@ -311,12 +248,12 @@ export class NostrEventStore {
     tagValue: string,
     options: ListEventsOptions = {}
   ): Promise<StoredNostrEvent[]> {
-    const manifest = await this.getManifest(root);
-    if (!manifest.byTag) {
-      return [];
-    }
-
-    return this.collectEvents(manifest.byTag, this.tagPrefix(tagName, tagValue), options);
+    return this.collectEvents(
+      this.collectionSourceFromManifest(await this.getManifest(root)),
+      MANIFEST_BY_TAG,
+      tagPrefix(tagName, tagValue),
+      options,
+    );
   }
 
   async getParameterizedReplaceable(
@@ -325,22 +262,18 @@ export class NostrEventStore {
     kind: number,
     dTag: string
   ): Promise<StoredNostrEvent | null> {
-    const manifest = await this.getManifest(root);
-    if (!manifest.parameterizedReplaceable) {
-      return null;
-    }
-
     if (dTag.length === 0) {
       throw new Error('Parameterized replaceable events require a non-empty d tag');
     }
 
-    const eventCid = await this.index.getLink(
-      manifest.parameterizedReplaceable,
-      this.parameterizedReplaceableKey(
-        this.validateHex64(pubkey, 'pubkey'),
-        this.validateKind(kind),
-        dTag
-      )
+    const source = this.collectionSourceFromManifest(await this.getManifest(root));
+    const eventCid = await source.getIndexLink(
+      MANIFEST_PARAMETERIZED_REPLACEABLE,
+      parameterizedReplaceableKey(
+        validateHex64(pubkey, 'pubkey'),
+        validateKind(kind),
+        dTag,
+      ),
     );
 
     return eventCid ? this.readStoredEvent(eventCid) : null;
@@ -375,35 +308,61 @@ export class NostrEventStore {
     };
   }
 
+  async getCollectionManifest(
+    root: CID | null,
+    sourceId: string = DEFAULT_NOSTR_EVENT_COLLECTION_SOURCE_ID,
+  ): Promise<CollectionManifest> {
+    const manifest = nostrEventManifestToCollectionManifest(await this.getManifest(root), sourceId);
+    const source = new CollectionSource(this.store, manifest);
+    return {
+      ...manifest,
+      itemCount: await source.count(),
+    };
+  }
+
+  async getCollectionSource(
+    root: CID | null,
+    sourceId: string = DEFAULT_NOSTR_EVENT_COLLECTION_SOURCE_ID,
+  ): Promise<CollectionSource> {
+    return new CollectionSource(this.store, await this.getCollectionManifest(root, sourceId));
+  }
+
   async listByKind(
     root: CID | null,
     kind: number,
     options: ListEventsOptions = {}
   ): Promise<StoredNostrEvent[]> {
-    const manifest = await this.getManifest(root);
-    if (!manifest.byKindTime) {
-      return [];
-    }
-
     return this.collectEvents(
-      manifest.byKindTime,
-      `${padKind(this.validateKind(kind))}:`,
-      options
+      this.collectionSourceFromManifest(await this.getManifest(root)),
+      MANIFEST_BY_KIND_TIME,
+      `${validateKind(kind).toString(16).padStart(8, '0')}:`,
+      options,
     );
   }
 
   private async collectEvents(
-    root: CID,
+    source: CollectionSource,
+    indexName: string,
     prefix: string,
-    options: ListEventsOptions = {}
+    options: ListEventsOptions = {},
   ): Promise<StoredNostrEvent[]> {
     const events: StoredNostrEvent[] = [];
-    const entries = prefix.length === 0
-      ? this.index.linksEntries(root)
-      : this.index.prefixLinks(root, prefix);
+    const entries = indexName === MANIFEST_BY_ID
+      ? await source.queryById({
+        prefix,
+        limit: options.limit !== undefined && options.since === undefined && options.until === undefined
+          ? options.limit
+          : undefined,
+      })
+      : await source.queryIndex(indexName, {
+        prefix,
+        limit: options.limit !== undefined && options.since === undefined && options.until === undefined
+          ? options.limit
+          : undefined,
+      });
 
-    for await (const [key, eventCid] of entries) {
-      const createdAt = this.createdAtFromIndexKey(key);
+    for (const { key, cid: eventCid } of entries) {
+      const createdAt = createdAtFromIndexKey(key);
       if (options.until !== undefined && createdAt > options.until) {
         continue;
       }
@@ -428,23 +387,74 @@ export class NostrEventStore {
     return this.decodeEvent(data);
   }
 
-  private async upsertWinner(
-    root: CID | null,
-    key: string,
+  private emptyManifest(): NostrEventManifest {
+    return {
+      byId: null,
+      byAuthorTime: null,
+      byAuthorKindTime: null,
+      byKindTime: null,
+      byTime: null,
+      byTag: null,
+      replaceable: null,
+      parameterizedReplaceable: null,
+    };
+  }
+
+  private collectionSourceFromManifest(manifest: NostrEventManifest): CollectionSource {
+    return new CollectionSource(
+      this.store,
+      nostrEventManifestToCollectionManifest(manifest),
+    );
+  }
+
+  private collectionWriterFromManifest(manifest: NostrEventManifest) {
+    return createNostrEventCollectionWriter(this.store, manifest);
+  }
+
+  private async resolveReplaceableDecision(
+    manifest: NostrEventManifest,
     event: StoredNostrEvent,
-    eventCid: CID
-  ): Promise<CID> {
-    const existingCid = root ? await this.index.getLink(root, key) : null;
+  ): Promise<{ accept: boolean; replaced?: { event: StoredNostrEvent; cid: CID } }> {
+    const slot = isReplaceableKind(event.kind)
+      ? {
+        indexName: MANIFEST_REPLACEABLE,
+        key: replaceableKey(event.pubkey, event.kind),
+      }
+      : isParameterizedReplaceableKind(event.kind)
+        ? {
+          indexName: MANIFEST_PARAMETERIZED_REPLACEABLE,
+          key: parameterizedReplaceableKey(event.pubkey, event.kind, getDTag(event) ?? ''),
+        }
+        : null;
+
+    if (!slot) {
+      return { accept: true };
+    }
+
+    const source = this.collectionSourceFromManifest(manifest);
+    const existingCid = await source.getIndexLink(slot.indexName, slot.key);
     if (!existingCid) {
-      return this.index.insertLink(root, key, eventCid);
+      return { accept: true };
     }
 
-    const existingEvent = await this.readStoredEvent(existingCid);
-    if (compareEvents(event, existingEvent) > 0) {
-      return this.index.insertLink(root, key, eventCid);
+    try {
+      const existingEvent = await this.readStoredEvent(existingCid);
+      if (compareEvents(event, existingEvent) > 0) {
+        return {
+          accept: true,
+          replaced: {
+            event: existingEvent,
+            cid: existingCid,
+          },
+        };
+      }
+      return { accept: false };
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Stored Nostr event blob is missing') {
+        return { accept: true };
+      }
+      throw error;
     }
-
-    return root!;
   }
 
   private async writeManifest(manifest: NostrEventManifest): Promise<CID | null> {
@@ -488,89 +498,8 @@ export class NostrEventStore {
     return cid;
   }
 
-  private authorTimeKey(event: StoredNostrEvent): string {
-    return `${event.pubkey}:${reverseTimestamp(event.created_at)}:${event.id}`;
-  }
-
-  private authorKindTimeKey(event: StoredNostrEvent): string {
-    return `${event.pubkey}:${padKind(event.kind)}:${reverseTimestamp(event.created_at)}:${event.id}`;
-  }
-
-  private kindTimeKey(event: StoredNostrEvent): string {
-    return `${padKind(event.kind)}:${reverseTimestamp(event.created_at)}:${event.id}`;
-  }
-
-  private timeKey(event: StoredNostrEvent): string {
-    return `${reverseTimestamp(event.created_at)}:${event.id}`;
-  }
-
-  private createdAtFromIndexKey(key: string): number {
-    const parts = key.split(':');
-    if (parts.length < 2) {
-      throw new Error(`Invalid Nostr index key: ${key}`);
-    }
-
-    const reversed = parts[parts.length - 2];
-    const reversedTimestamp = BigInt(`0x${reversed}`);
-    const createdAt = MAX_U64 - reversedTimestamp;
-    if (createdAt > BigInt(Number.MAX_SAFE_INTEGER)) {
-      throw new Error(`Created_at exceeds safe integer range in Nostr index key: ${key}`);
-    }
-
-    return Number(createdAt);
-  }
-
-  private tagKeys(event: StoredNostrEvent): string[] {
-    return event.tags.flatMap((tag) => {
-      const [name, value] = tag;
-      if (!name || !value) {
-        return [];
-      }
-
-      const normalizedName = name.toLowerCase();
-      const normalizedValue = this.normalizeTagValue(normalizedName, value);
-      return [`${normalizedName}:${normalizedValue}:${reverseTimestamp(event.created_at)}:${event.id}`];
-    });
-  }
-
-  private tagPrefix(tagName: string, tagValue: string): string {
-    const normalizedName = this.normalizeTagName(tagName);
-    return `${normalizedName}:${this.normalizeTagValue(normalizedName, tagValue)}:`;
-  }
-
-  private normalizeTagName(tagName: string): string {
-    if (tagName.length === 0) {
-      throw new Error('tag name must be non-empty');
-    }
-
-    return tagName.toLowerCase();
-  }
-
-  private normalizeTagValue(tagName: string, tagValue: string): string {
-    return tagName === 't' ? tagValue.toLowerCase() : tagValue;
-  }
-
-  private replaceableKey(pubkey: string, kind: number): string {
-    return `${pubkey}:${padKind(kind)}`;
-  }
-
-  private parameterizedReplaceableKey(pubkey: string, kind: number, dTag: string): string {
-    return `${pubkey}:${padKind(kind)}:${dTag}`;
-  }
-
   private validateEventShape(event: StoredNostrEvent): StoredNostrEvent {
-    const normalized = {
-      id: this.validateHex64(event.id, 'event id'),
-      pubkey: this.validateHex64(event.pubkey, 'pubkey'),
-      created_at: this.validateCreatedAt(event.created_at),
-      kind: this.validateKind(event.kind),
-      tags: event.tags,
-      content: this.validateContent(event.content),
-      sig: this.validateHex128(event.sig, 'signature'),
-    };
-
-    assertStringArray(normalized.tags);
-    return normalized;
+    return validateEventShape(event);
   }
 
   private async validateEvent(event: StoredNostrEvent): Promise<StoredNostrEvent> {
@@ -581,45 +510,5 @@ export class NostrEventStore {
     }
 
     return normalized;
-  }
-
-  private validateHex64(value: string, label: string): string {
-    if (!HEX_64.test(value)) {
-      throw new Error(`${label} must be a lowercase 64-character hex string`);
-    }
-
-    return value;
-  }
-
-  private validateHex128(value: string, label: string): string {
-    if (!HEX_128.test(value)) {
-      throw new Error(`${label} must be a lowercase 128-character hex string`);
-    }
-
-    return value;
-  }
-
-  private validateCreatedAt(value: number): number {
-    if (!Number.isInteger(value) || value < 0) {
-      throw new Error('created_at must be a non-negative integer');
-    }
-
-    return value;
-  }
-
-  private validateKind(value: number): number {
-    if (!Number.isInteger(value) || value < 0) {
-      throw new Error('kind must be a non-negative integer');
-    }
-
-    return value;
-  }
-
-  private validateContent(value: string): string {
-    if (typeof value !== 'string') {
-      throw new Error('content must be a string');
-    }
-
-    return value;
   }
 }
