@@ -8,9 +8,11 @@ other Rust crates can share today:
 - canonical `by-id` roots
 - named derived key indexes
 - named derived search indexes
+- optional schema defaults, normalization, validation, and migration hooks
 - incremental `put` / `delete` updates
 - full rebuilds and explicit reindexing from owned item snapshots
 - directory-root read/write helpers
+- federated search across many collection sources
 - shared search roots for multiple named views
 - contextual derived search entries for related entities
 
@@ -19,10 +21,10 @@ is useful when you add a new derived index or change derivation rules, but it
 still requires caller-supplied item snapshots and their CIDs. Collection roots
 alone are not enough to regenerate new indexes.
 
-The Rust crate is still intentionally smaller than the TypeScript
-`@hashtree/collection` package. It now covers the shared by-id, key-index, and
-search-index lifecycle so crates like `hashtree-nostr` can stop hand-rolling
-manifest and index maintenance. TS-style federated search helpers and schema
-hooks can still be added later if Rust-side needs become concrete.
+The Rust crate now covers the same core lifecycle as the TypeScript
+`@hashtree/collection` package: collection roots, derived indexes, schema
+hooks, and federated search helpers. It still stays focused on immutable
+collection/index mechanics rather than trying to become a general-purpose
+database layer.
 
 Part of [hashtree](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree).

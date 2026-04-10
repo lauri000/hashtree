@@ -6,9 +6,10 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
-description = "Immutable by-id and key-index collections for hashtree"
+description = "Immutable collections, schema hooks, and federated search for hashtree"
 
 [dependencies]
+futures.workspace = true
 hashtree-core.workspace = true
 hashtree-index.workspace = true
 thiserror.workspace = true
