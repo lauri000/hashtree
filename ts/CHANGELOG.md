@@ -2,20 +2,13 @@
 
 ## Unreleased
 
-Pending npm version bump:
+## 0.1.23 - 2026-04-11
 
-- `@hashtree/collection@0.1.1`
-- `@hashtree/nostr@0.1.7`
+Changes since the previous npm package publish.
 
 ### Added
 
-- Added `CollectionSource.count()` and `CollectionSource.queryById(...)` so callers can enumerate `by-id` entries and perform prefix-limited ID queries without reading internal index objects directly.
-- Added shared `.collection-manifest.json` helpers in `@hashtree/collection` so collection roots can publish and reload `schemaVersion`, item/projection formats, and optional schema references in a cross-runtime format.
-- Added `@hashtree/nostr` event-root publication of the shared collection manifest metadata plus TS/Rust interop coverage that compares the actual published metadata payloads.
-
-## 0.1.22 - 2026-04-10
-
-Changes since the previous npm package publish.
+- Added bulk `build(...)` and `buildLinks(...)` helpers to `@hashtree/index` so callers can construct B-tree roots from unsorted key/value and key/CID iterables in one pass.
 
 ### Fixed
 
@@ -25,6 +18,19 @@ Changes since the previous npm package publish.
 ### Improved
 
 - Improved `@hashtree/worker/client` root-watch behavior so delayed initial roots no longer produce a synthetic `null` callback before the first real update.
+
+## 0.1.22 - 2026-04-10
+
+Changes since the previous npm package publish.
+
+### Added
+
+- `@hashtree/collection@0.1.1`
+- `@hashtree/nostr@0.1.7`
+
+- Added `CollectionSource.count()` and `CollectionSource.queryById(...)` so callers can enumerate `by-id` entries and perform prefix-limited ID queries without reading internal index objects directly.
+- Added shared `.collection-manifest.json` helpers in `@hashtree/collection` so collection roots can publish and reload `schemaVersion`, item/projection formats, and optional schema references in a cross-runtime format.
+- Added `@hashtree/nostr` event-root publication of the shared collection manifest metadata plus TS/Rust interop coverage that compares the actual published metadata payloads.
 
 ## 0.1.20 - 2026-04-10
 
