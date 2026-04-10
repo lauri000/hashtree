@@ -358,3 +358,74 @@ async fn rebuild_keeps_only_the_last_item_for_each_id() {
         .unwrap()
         .is_empty());
 }
+
+#[tokio::test]
+async fn reindex_rebuilds_from_canonical_entries_and_clears_stale_state() {
+    let store = Arc::new(MemoryStore::new());
+    let definition = song_definition();
+    let mut writer = CollectionWriter::new(Arc::clone(&store), definition.clone());
+    let original = Song {
+        id: "song-a".to_string(),
+        title: "Old Horizon".to_string(),
+        artist: "Ada".to_string(),
+        tags: vec!["night".to_string()],
+    };
+    let replacement = Song {
+        id: "song-a".to_string(),
+        title: "New Horizon".to_string(),
+        artist: "Bea".to_string(),
+        tags: vec!["day".to_string()],
+    };
+    let other = Song {
+        id: "song-b".to_string(),
+        title: "Sun Clock".to_string(),
+        artist: "Bea".to_string(),
+        tags: vec!["ambient".to_string()],
+    };
+
+    writer
+        .put(&original, &cid_from_seed(30), None)
+        .await
+        .unwrap();
+    writer
+        .reindex(vec![
+            (replacement, cid_from_seed(31)),
+            (other, cid_from_seed(32)),
+        ])
+        .await
+        .unwrap();
+
+    let source =
+        CollectionSource::with_definition(Arc::clone(&store), writer.snapshot(), &definition);
+    assert_eq!(source.get("song-a").await.unwrap(), Some(cid_from_seed(31)));
+    assert!(source
+        .query_index("artist", Some("artist:ada"), None)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        source
+            .query_index("artist", Some("artist:bea"), None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.key)
+            .collect::<Vec<_>>(),
+        vec!["artist:bea".to_string()]
+    );
+    assert_eq!(
+        source
+            .search("songs", "new", SearchOptions::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>(),
+        vec!["song-a".to_string()]
+    );
+    assert!(source
+        .search("songs", "old", SearchOptions::default())
+        .await
+        .unwrap()
+        .is_empty());
+}

@@ -640,6 +640,13 @@ impl<S: Store, T> CollectionWriter<S, T> {
         Ok(self.snapshot())
     }
 
+    pub async fn reindex<I>(&mut self, entries: I) -> Result<CollectionState, CollectionError>
+    where
+        I: IntoIterator<Item = (T, Cid)>,
+    {
+        self.rebuild(entries).await
+    }
+
     pub async fn rebuild_with_context<I>(
         &mut self,
         entries: I,
@@ -659,6 +666,16 @@ impl<S: Store, T> CollectionWriter<S, T> {
                 .await?;
         }
         Ok(self.snapshot())
+    }
+
+    pub async fn reindex_with_context<I>(
+        &mut self,
+        entries: I,
+    ) -> Result<CollectionState, CollectionError>
+    where
+        I: IntoIterator<Item = (T, Cid, Option<CollectionWriteContext>)>,
+    {
+        self.rebuild_with_context(entries).await
     }
 
     pub async fn write_root(&self) -> Result<Option<Cid>, CollectionError> {

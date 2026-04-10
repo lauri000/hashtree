@@ -9,10 +9,15 @@ other Rust crates can share today:
 - named derived key indexes
 - named derived search indexes
 - incremental `put` / `delete` updates
-- full rebuilds from owned item snapshots
+- full rebuilds and explicit reindexing from owned item snapshots
 - directory-root read/write helpers
 - shared search roots for multiple named views
 - contextual derived search entries for related entities
+
+`reindex` is the public "rebuild everything from canonical items" entrypoint. It
+is useful when you add a new derived index or change derivation rules, but it
+still requires caller-supplied item snapshots and their CIDs. Collection roots
+alone are not enough to regenerate new indexes.
 
 The Rust crate is still intentionally smaller than the TypeScript
 `@hashtree/collection` package. It now covers the shared by-id, key-index, and
