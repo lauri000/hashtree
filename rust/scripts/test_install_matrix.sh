@@ -20,6 +20,7 @@ Options:
   --platforms <csv>               Subset: host,docker-arm64,docker-amd64,windows,brew
   --docker-bin <path>             Docker binary to use (default: docker)
   --docker-image <image>          Debian image used for Linux smoke tests
+  --timeout-seconds <seconds>     Timeout for Docker/Windows smoke runs (default: 180)
   --windows-zip-url <url>         Override the Windows zip asset URL
   --windows-vm-name <name>        Override the Parallels Windows VM name
   --brew-tap-name <name>          Override the Homebrew tap name
@@ -45,6 +46,7 @@ TEST_REMOTE="htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsde
 PLATFORMS_CSV="host,docker-arm64,docker-amd64,windows,brew"
 DOCKER_BIN="${DOCKER_BIN:-docker}"
 DOCKER_IMAGE="${DOCKER_IMAGE:-debian:bookworm-slim}"
+COMMAND_TIMEOUT_SECONDS="${COMMAND_TIMEOUT_SECONDS:-180}"
 WINDOWS_ZIP_URL=""
 WINDOWS_VM_NAME=""
 BREW_TAP_NAME=""
@@ -57,6 +59,8 @@ RESULT_STATUSES=()
 RESULT_NOTES=()
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hashtree-install-matrix.XXXXXX")"
+LOG_DIR="${WORK_DIR}/logs"
+mkdir -p "$LOG_DIR"
 
 cleanup() {
     if [ "$KEEP_TEMP" -eq 0 ] && [ -n "${WORK_DIR:-}" ] && [ -d "$WORK_DIR" ]; then
@@ -89,6 +93,10 @@ while [ $# -gt 0 ]; do
             ;;
         --docker-image)
             DOCKER_IMAGE="${2:-}"
+            shift 2
+            ;;
+        --timeout-seconds)
+            COMMAND_TIMEOUT_SECONDS="${2:-}"
             shift 2
             ;;
         --windows-zip-url)
@@ -168,6 +176,56 @@ platform_requested() {
     esac
 }
 
+platform_log_path() {
+    local label="$1"
+    label="${label//[^[:alnum:]._-]/_}"
+    printf '%s/%s.log\n' "$LOG_DIR" "$label"
+}
+
+failure_note_from_log() {
+    local log_path="$1"
+    local tail_text
+    if [ ! -s "$log_path" ]; then
+        printf 'see %s (no output captured)\n' "$log_path"
+        return 0
+    fi
+    tail_text="$(tail -n 8 "$log_path" 2>/dev/null || true)"
+    printf 'see %s; tail: %s\n' "$log_path" "$tail_text"
+}
+
+run_with_timeout() {
+    local timeout_seconds="$1"
+    local log_path="$2"
+    shift 2
+
+    if [ "${timeout_seconds}" -le 0 ] || ! command -v python3 >/dev/null 2>&1; then
+        "$@" >"$log_path" 2>&1
+        return $?
+    fi
+
+    python3 - "$timeout_seconds" "$log_path" "$@" <<'PY'
+import subprocess
+import sys
+
+timeout = int(sys.argv[1])
+log_path = sys.argv[2]
+command = sys.argv[3:]
+
+with open(log_path, "wb") as log_file:
+    try:
+        proc = subprocess.Popen(command, stdout=log_file, stderr=subprocess.STDOUT)
+        raise SystemExit(proc.wait(timeout=timeout))
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        log_file.write(f"\nTimed out after {timeout}s\n".encode("utf-8"))
+        raise SystemExit(124)
+PY
+}
+
 extract_install_cmd_from_readme() {
     grep -F 'curl -fsSL https://upload.iris.to/' "$README_PATH" | grep 'install.sh' | head -n1
 }
@@ -237,27 +295,30 @@ run_unix_install_smoke() {
     local install_cmd="$1"
     local test_remote="$2"
     local home_dir="$3"
-    local system_path="/usr/bin:/bin:/usr/sbin:/sbin"
+    local system_path="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
     mkdir -p "$home_dir"
     env HOME="$home_dir" PATH="${system_path}:${PATH:-}" /bin/bash -lc "$install_cmd"
     env HOME="$home_dir" PATH="$home_dir/.local/bin:${system_path}:${PATH:-}" \
         /bin/bash -lc '
             set -euo pipefail
-            test -x "$HOME/.local/bin/htree"
-            test -x "$HOME/.local/bin/htree-cashu"
-            test -x "$HOME/.local/bin/git-remote-htree"
-            "$HOME/.local/bin/htree" --help >/dev/null
-            helper_out="$(printf "capabilities\n" | "$HOME/.local/bin/git-remote-htree" origin "'"$test_remote"'")"
-            printf "%s\n" "$helper_out" | grep -Fx "fetch" >/dev/null
-            printf "%s\n" "$helper_out" | grep -Fx "push" >/dev/null
-            printf "%s\n" "$helper_out" | grep -Fx "option" >/dev/null
-            git ls-remote "'"$test_remote"'" >/dev/null
+            command -v htree >/dev/null || { echo "htree not found on PATH=$PATH" >&2; exit 1; }
+            command -v htree-cashu >/dev/null || { echo "htree-cashu not found on PATH=$PATH" >&2; exit 1; }
+            command -v git-remote-htree >/dev/null || { echo "git-remote-htree not found on PATH=$PATH" >&2; exit 1; }
+            htree --help >/dev/null || { echo "htree --help failed" >&2; exit 1; }
+            helper_out="$(printf "capabilities\n" | git-remote-htree origin "'"$test_remote"'")" || {
+                echo "git-remote-htree capabilities command failed" >&2
+                exit 1
+            }
+            printf "%s\n" "$helper_out" | grep -Fx "fetch" >/dev/null || { echo "git-remote-htree missing fetch capability" >&2; exit 1; }
+            printf "%s\n" "$helper_out" | grep -Fx "push" >/dev/null || { echo "git-remote-htree missing push capability" >&2; exit 1; }
+            printf "%s\n" "$helper_out" | grep -Fx "option" >/dev/null || { echo "git-remote-htree missing option capability" >&2; exit 1; }
+            git ls-remote "'"$test_remote"'" >/dev/null || { echo "git ls-remote failed for '"$test_remote"'" >&2; exit 1; }
         '
 }
 
 run_host_smoke() {
-    local host_os host_arch label home_dir output
+    local host_os host_arch label home_dir log_path
     host_os="$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')"
     host_arch="$(uname -m 2>/dev/null | tr '[:upper:]' '[:lower:]')"
     label="host-${host_os}-${host_arch}"
@@ -272,17 +333,18 @@ run_host_smoke() {
     esac
 
     home_dir="${WORK_DIR}/${label}-home"
-    if output="$(run_unix_install_smoke "$INSTALL_CMD" "$TEST_REMOTE" "$home_dir" 2>&1)"; then
+    log_path="$(platform_log_path "$label")"
+    if run_unix_install_smoke "$INSTALL_CMD" "$TEST_REMOTE" "$home_dir" >"$log_path" 2>&1; then
         record_result "$label" "PASS" "install command, htree --help, helper capabilities, and git ls-remote succeeded"
     else
-        record_result "$label" "FAIL" "$output"
+        record_result "$label" "FAIL" "$(failure_note_from_log "$log_path")"
     fi
 }
 
 run_docker_smoke() {
     local platform="$1"
     local label="$2"
-    local output
+    local log_path
 
     if ! command -v "$DOCKER_BIN" >/dev/null 2>&1; then
         record_result "$label" "SKIP" "docker not available"
@@ -294,7 +356,8 @@ run_docker_smoke() {
         return 0
     fi
 
-    if output="$(
+    log_path="$(platform_log_path "$label")"
+    if run_with_timeout "$COMMAND_TIMEOUT_SECONDS" "$log_path" \
         env INSTALL_CMD="$INSTALL_CMD" TEST_REMOTE="$TEST_REMOTE" \
             "$DOCKER_BIN" run --rm --platform "$platform" \
             -e INSTALL_CMD \
@@ -308,23 +371,25 @@ run_docker_smoke() {
                 export HOME=/tmp/hashtree-home
                 mkdir -p "$HOME"
                 /bin/bash -lc "$INSTALL_CMD"
-                PATH="$HOME/.local/bin:/usr/bin:/bin" /bin/bash -lc '"'"'
+                PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" /bin/bash -lc '"'"'
                     set -euo pipefail
-                    test -x "$HOME/.local/bin/htree"
-                    test -x "$HOME/.local/bin/htree-cashu"
-                    test -x "$HOME/.local/bin/git-remote-htree"
-                    "$HOME/.local/bin/htree" --help >/dev/null
-                    helper_out="$(printf "capabilities\n" | "$HOME/.local/bin/git-remote-htree" origin "$TEST_REMOTE")"
-                    printf "%s\n" "$helper_out" | grep -Fx "fetch" >/dev/null
-                    printf "%s\n" "$helper_out" | grep -Fx "push" >/dev/null
-                    printf "%s\n" "$helper_out" | grep -Fx "option" >/dev/null
-                    git ls-remote "$TEST_REMOTE" >/dev/null
+                    command -v htree >/dev/null || { echo "htree not found on PATH=$PATH" >&2; exit 1; }
+                    command -v htree-cashu >/dev/null || { echo "htree-cashu not found on PATH=$PATH" >&2; exit 1; }
+                    command -v git-remote-htree >/dev/null || { echo "git-remote-htree not found on PATH=$PATH" >&2; exit 1; }
+                    htree --help >/dev/null || { echo "htree --help failed" >&2; exit 1; }
+                    helper_out="$(printf "capabilities\n" | git-remote-htree origin "$TEST_REMOTE")" || {
+                        echo "git-remote-htree capabilities command failed" >&2
+                        exit 1
+                    }
+                    printf "%s\n" "$helper_out" | grep -Fx "fetch" >/dev/null || { echo "git-remote-htree missing fetch capability" >&2; exit 1; }
+                    printf "%s\n" "$helper_out" | grep -Fx "push" >/dev/null || { echo "git-remote-htree missing push capability" >&2; exit 1; }
+                    printf "%s\n" "$helper_out" | grep -Fx "option" >/dev/null || { echo "git-remote-htree missing option capability" >&2; exit 1; }
+                    git ls-remote "$TEST_REMOTE" >/dev/null || { echo "git ls-remote failed for $TEST_REMOTE" >&2; exit 1; }
                 '"'"'
-            ' 2>&1
-    )"; then
+            '; then
         record_result "$label" "PASS" "install command, htree --help, helper capabilities, and git ls-remote succeeded"
     else
-        record_result "$label" "FAIL" "$output"
+        record_result "$label" "FAIL" "$(failure_note_from_log "$log_path")"
     fi
 }
 
@@ -333,7 +398,7 @@ powershell_escape() {
 }
 
 run_windows_smoke() {
-    local vm_name zip_url label output ps_script encoded
+    local vm_name zip_url label ps_script encoded log_path
     label="windows-vm-x86_64"
 
     if [ "$(uname -s 2>/dev/null)" != "Darwin" ]; then
@@ -373,22 +438,29 @@ run_windows_smoke() {
 New-Item -ItemType Directory -Path \$work | Out-Null
 try {
   \$zipPath = Join-Path \$work 'hashtree.zip'
+  Write-Output 'download-start'
   Invoke-WebRequest -Uri \$zipUrl -OutFile \$zipPath
+  Write-Output 'download-ok'
   Expand-Archive -Path \$zipPath -DestinationPath \$work
+  Write-Output 'expand-ok'
   \$htree = Get-ChildItem -Path \$work -Recurse -Filter 'htree.exe' | Select-Object -First 1
   \$helper = Get-ChildItem -Path \$work -Recurse -Filter 'git-remote-htree.exe' | Select-Object -First 1
   if (-not \$htree) { throw 'htree.exe not found in extracted archive' }
   if (-not \$helper) { throw 'git-remote-htree.exe not found in extracted archive' }
   & \$htree.FullName --help | Out-Null
+  Write-Output 'htree-help-ok'
   \$cap = 'capabilities' | & \$helper.FullName origin \$remote
   if (\$cap -notcontains 'fetch' -or \$cap -notcontains 'push' -or \$cap -notcontains 'option') {
     throw 'git-remote-htree.exe did not advertise fetch/push/option'
   }
+  Write-Output 'helper-capabilities-ok'
   if (Get-Command git -ErrorAction SilentlyContinue) {
+    Write-Output 'git-ls-remote-start'
     \$refs = & git ls-remote \$remote
     if (-not \$refs) {
       throw 'git ls-remote returned no refs'
     }
+    Write-Output 'git-ls-remote-ok'
   }
 }
 finally {
@@ -402,16 +474,19 @@ EOF
             python3 -c 'import base64, sys; print(base64.b64encode(sys.stdin.buffer.read().decode("utf-8").encode("utf-16le")).decode("ascii"))'
     )"
 
-    if output="$(prlctl exec "$vm_name" --current-user powershell.exe -NoProfile -NonInteractive -EncodedCommand "$encoded" 2>&1)"; then
+    log_path="$(platform_log_path "$label")"
+    if run_with_timeout "$COMMAND_TIMEOUT_SECONDS" "$log_path" \
+        prlctl exec "$vm_name" --current-user powershell.exe -NoProfile -NonInteractive -EncodedCommand "$encoded"
+    then
         record_result "$label" "PASS" "downloaded the Windows zip and verified htree.exe plus git-remote-htree.exe"
     else
-        record_result "$label" "FAIL" "$output"
+        record_result "$label" "FAIL" "$(failure_note_from_log "$log_path")"
     fi
 }
 
 run_brew_smoke() {
     local label="homebrew-host"
-    local had_tap=0 had_formula=0 output
+    local had_tap=0 had_formula=0 output log_path
 
     if ! command -v brew >/dev/null 2>&1; then
         record_result "$label" "SKIP" "brew not available"
@@ -423,6 +498,8 @@ run_brew_smoke() {
         return 0
     fi
 
+    log_path="$(platform_log_path "$label")"
+
     if output="$(
         HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 \
             brew tap | grep -Fx "$BREW_TAP_NAME" >/dev/null
@@ -433,8 +510,8 @@ run_brew_smoke() {
     fi
 
     if [ "$had_tap" -eq 0 ]; then
-        if ! output="$(HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew tap "$BREW_TAP_NAME" "$BREW_TAP_URL" 2>&1)"; then
-            record_result "$label" "FAIL" "$output"
+        if ! HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew tap "$BREW_TAP_NAME" "$BREW_TAP_URL" >"$log_path" 2>&1; then
+            record_result "$label" "FAIL" "$(failure_note_from_log "$log_path")"
             return 0
         fi
     fi
@@ -443,23 +520,23 @@ run_brew_smoke() {
         had_formula=1
     else
         had_formula=0
-        if ! output="$(HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install "$BREW_FORMULA" 2>&1)"; then
+        if ! HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install "$BREW_FORMULA" >"$log_path" 2>&1; then
             if [ "$had_tap" -eq 0 ]; then
                 HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew untap "$BREW_TAP_NAME" >/dev/null 2>&1 || true
             fi
-            record_result "$label" "FAIL" "$output"
+            record_result "$label" "FAIL" "$(failure_note_from_log "$log_path")"
             return 0
         fi
     fi
 
-    if output="$(
+    if (
         HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew test "$BREW_FORMULA" &&
             HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew info "$BREW_FORMULA" >/dev/null &&
             HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew info hashtree >/dev/null
-    2>&1)"; then
+    ) >"$log_path" 2>&1; then
         record_result "$label" "PASS" "brew install/test/info succeeded for ${BREW_FORMULA}"
     else
-        record_result "$label" "FAIL" "$output"
+        record_result "$label" "FAIL" "$(failure_note_from_log "$log_path")"
     fi
 
     if [ "$had_formula" -eq 0 ]; then
