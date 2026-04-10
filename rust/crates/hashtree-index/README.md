@@ -9,6 +9,7 @@ Current uses include:
 
 - key/value lookup over immutable tree roots
 - link indexes that point directly at content-addressed blobs
+- derived search indexes with tokenized prefix lookup and ranked results
 - cross-language index interoperability with the TypeScript implementation
 
 Part of [hashtree](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree).

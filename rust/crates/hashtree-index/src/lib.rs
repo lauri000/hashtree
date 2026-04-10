@@ -1,5 +1,7 @@
 //! Content-addressed B-tree indexes backed by hashtree.
 
+mod search;
+
 use std::cmp::Ordering;
 use std::future::Future;
 use std::pin::Pin;
@@ -7,6 +9,9 @@ use std::sync::Arc;
 
 use hashtree_core::{
     Cid, DirEntry, HashTree, HashTreeConfig, HashTreeError, LinkType, Store, TreeEntry,
+};
+pub use search::{
+    SearchError, SearchIndex, SearchIndexOptions, SearchLinkResult, SearchOptions, SearchResult,
 };
 
 const DEFAULT_ORDER: usize = 32;

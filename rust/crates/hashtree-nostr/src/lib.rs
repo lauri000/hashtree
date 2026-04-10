@@ -426,6 +426,7 @@ fn collection_state_from_nostr_manifest(manifest: &NostrEventManifest) -> Collec
     CollectionState {
         by_id_root: manifest.by_id.clone(),
         key_roots,
+        search_roots: BTreeMap::new(),
     }
 }
 
