@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use hashtree_cli::{Config, HashtreeStore};
 use hashtree_core::{nhash_encode_full, NHashData};
+use nostr::nips::nip19::ToBech32;
+use nostr::PublicKey;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -140,6 +142,17 @@ fn unix_timestamp() -> u64 {
         .as_secs()
 }
 
+fn format_socialgraph_root(root: Option<&str>) -> String {
+    let Some(root) = root else {
+        return "unknown".to_string();
+    };
+
+    PublicKey::from_hex(root)
+        .ok()
+        .and_then(|pubkey| pubkey.to_bech32().ok())
+        .unwrap_or_else(|| root.to_string())
+}
+
 pub(crate) fn run_socialgraph_filter(
     data_dir: PathBuf,
     max_distance: Option<u32>,
@@ -269,8 +282,8 @@ pub(crate) fn run_socialgraph_stats(data_dir: PathBuf) -> Result<()> {
     let stats = graph_store.stats().context("read social graph stats")?;
 
     println!("Social graph:");
-    println!("  Root: {}", stats.root.as_deref().unwrap_or("unknown"));
-    println!("  Users: {}", stats.total_users);
+    println!("  Root: {}", format_socialgraph_root(stats.root.as_deref()));
+    println!("  Reachable users: {}", stats.total_users);
     println!("  Follow edges: {}", stats.total_follows);
     println!("  Max depth: {}", stats.max_depth);
     if stats.size_by_distance.is_empty() {
@@ -405,7 +418,7 @@ pub(crate) async fn run_socialgraph_warm(
             .unwrap_or_else(|| "full fetch for known authors".to_string())
     );
     println!(
-        "Users: {} -> {} (delta {})",
+        "Reachable users: {} -> {} (delta {})",
         before.total_users,
         after.total_users,
         after.total_users.saturating_sub(before.total_users)
@@ -419,4 +432,31 @@ pub(crate) async fn run_socialgraph_warm(
     println!("Max depth: {} -> {}", before.max_depth, after.max_depth);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_socialgraph_root;
+    use nostr::nips::nip19::ToBech32;
+    use nostr::PublicKey;
+
+    #[test]
+    fn formats_hex_socialgraph_root_as_npub() {
+        let hex_root = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+        let expected = PublicKey::from_hex(hex_root)
+            .expect("valid hex pubkey")
+            .to_bech32()
+            .expect("npub encoding");
+
+        assert_eq!(format_socialgraph_root(Some(hex_root)), expected);
+    }
+
+    #[test]
+    fn preserves_unknown_and_invalid_socialgraph_root_values() {
+        assert_eq!(format_socialgraph_root(None), "unknown");
+        assert_eq!(
+            format_socialgraph_root(Some("not-a-valid-pubkey")),
+            "not-a-valid-pubkey"
+        );
+    }
 }
