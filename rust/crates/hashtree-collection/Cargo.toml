@@ -12,6 +12,9 @@ description = "Immutable collections, schema hooks, and federated search for has
 futures.workspace = true
 hashtree-core.workspace = true
 hashtree-index.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
