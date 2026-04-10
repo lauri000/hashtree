@@ -314,14 +314,16 @@ resolve_iris_release_script() {
 IRIS_RELEASE_SCRIPT="$(resolve_iris_release_script || true)"
 
 if [ -n "$npub" ]; then
-    if [ ! -x "$RELEASE_BOOTSTRAP_SCRIPT" ]; then
+    if ! homebrew_archives_ready "$OUTPUT_DIR"; then
+        echo "Warning: skipping release installer generation because the full macOS/Linux archive set is not present." >&2
+    elif [ ! -x "$RELEASE_BOOTSTRAP_SCRIPT" ]; then
         echo "Missing release bootstrap helper: ${RELEASE_BOOTSTRAP_SCRIPT}" >&2
         exit 1
+    else
+        "${RELEASE_BOOTSTRAP_SCRIPT}" \
+            --path "${OUTPUT_DIR}/install.sh" \
+            --base-url "$(gateway_release_base_url "$npub" "$TREE_NAME" "$VERSION_PATH")"
     fi
-
-    "${RELEASE_BOOTSTRAP_SCRIPT}" \
-        --path "${OUTPUT_DIR}/install.sh" \
-        --base-url "$(gateway_release_base_url "$npub" "$TREE_NAME" "$VERSION_PATH")"
 else
     echo "Warning: Could not determine current npub; skipping release installer generation." >&2
 fi

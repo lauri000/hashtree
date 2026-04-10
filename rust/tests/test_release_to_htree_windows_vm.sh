@@ -166,7 +166,10 @@ PATH="${TMPDIR}/bin:$PATH" TEST_LOG_DIR="${TMPDIR}/logs" \
 
 grep -F "build:--version v0.2.3 --output-dir ${TMPDIR}/out --windows-artifacts-dir" "${TMPDIR}/logs/calls.log" >/dev/null
 grep -F "windows_helper:" "${STDOUT_FILE}" >/dev/null
+grep -F "Warning: skipping release installer generation because the full macOS/Linux archive set is not present." "${STDERR_FILE}" >/dev/null
+test ! -f "${TMPDIR}/out/install.sh"
 test -f "${TMPDIR}/out/hashtree-x86_64-pc-windows-msvc.zip"
+test ! -f "${TMPDIR}/release-stage/install.sh"
 test -f "${TMPDIR}/release-stage/assets/hashtree-x86_64-pc-windows-msvc.zip"
 grep -F 'Windows x64 CLI' "${TMPDIR}/release-stage/notes.md" >/dev/null
 grep -F "publish_release:v0.2.3 nhash1release releases/hashtree" "${TMPDIR}/logs/calls.log" >/dev/null

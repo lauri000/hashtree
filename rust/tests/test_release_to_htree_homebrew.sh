@@ -1,6 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+README_INSTALL_CMD="$(grep -F 'curl -fsSL https://upload.iris.to/' "${SOURCE_REPO_ROOT}/README.md" | grep 'install.sh' | head -n1)"
+README_NPUB="$(printf '%s\n' "${README_INSTALL_CMD}" | grep -oE 'npub1[023456789acdefghjklmnpqrstuvwxyz]+' | head -n1)"
+
+if [ -z "${README_INSTALL_CMD}" ] || [ -z "${README_NPUB}" ]; then
+    echo "Failed to extract canonical install command from README.md" >&2
+    exit 1
+fi
+
 TMPDIR="$(mktemp -d)"
 REPO_ROOT="${TMPDIR}/hashtree-release-worktree"
 cleanup() {
@@ -18,10 +28,10 @@ mkdir -p \
     "${TMPDIR}/out" \
     "${TMPDIR}/release-stage"
 
-cp /Users/sirius/src/hashtree/rust/scripts/release_to_htree.sh "${REPO_ROOT}/rust/scripts/release_to_htree.sh"
-cp /Users/sirius/src/hashtree/rust/scripts/release_common.sh "${REPO_ROOT}/rust/scripts/release_common.sh"
-cp /Users/sirius/src/hashtree/rust/scripts/write_release_bootstrap_installer.sh "${REPO_ROOT}/rust/scripts/write_release_bootstrap_installer.sh"
-cp /Users/sirius/src/hashtree/scripts/stage_repo_release.mjs "${REPO_ROOT}/scripts/stage_repo_release.mjs"
+cp "${SOURCE_REPO_ROOT}/rust/scripts/release_to_htree.sh" "${REPO_ROOT}/rust/scripts/release_to_htree.sh"
+cp "${SOURCE_REPO_ROOT}/rust/scripts/release_common.sh" "${REPO_ROOT}/rust/scripts/release_common.sh"
+cp "${SOURCE_REPO_ROOT}/rust/scripts/write_release_bootstrap_installer.sh" "${REPO_ROOT}/rust/scripts/write_release_bootstrap_installer.sh"
+cp "${SOURCE_REPO_ROOT}/scripts/stage_repo_release.mjs" "${REPO_ROOT}/scripts/stage_repo_release.mjs"
 chmod +x "${REPO_ROOT}/rust/scripts/release_to_htree.sh"
 chmod +x "${REPO_ROOT}/rust/scripts/write_release_bootstrap_installer.sh"
 git init "${REPO_ROOT}" >/dev/null
@@ -122,20 +132,20 @@ echo "cargo_publish:$*" >>"${TEST_LOG_DIR}/calls.log"
 EOF
 chmod +x "${REPO_ROOT}/rust/scripts/publish.sh"
 
-cat >"${TMPDIR}/bin/htree" <<'EOF'
+cat >"${TMPDIR}/bin/htree" <<EOF
 #!/bin/bash
 set -euo pipefail
-case "${1:-}" in
+case "\${1:-}" in
     add)
-        echo "htree_add:$2" >>"${TEST_LOG_DIR}/calls.log"
+        echo "htree_add:\$2" >>"\${TEST_LOG_DIR}/calls.log"
         printf '  url: nhash1release\n'
         ;;
     user)
         printf '2026-03-31T10:00:00Z INFO loading profile\n'
-        printf 'npub1qqqqqqqqqqqqqqqqqqqqq (Release Owner)\n'
+        printf '${README_NPUB} (Release Owner)\n'
         ;;
     *)
-        echo "unexpected htree command: $*" >&2
+        echo "unexpected htree command: \$*" >&2
         exit 1
         ;;
 esac
@@ -157,9 +167,9 @@ test -f "${TMPDIR}/release-stage/assets/hashtree-aarch64-apple-darwin.tar.gz"
 grep -F "\"commit\": \"${SOURCE_COMMIT}\"" "${TMPDIR}/release-stage/release.json" >/dev/null
 
 grep -F "publish_release:v0.2.3 nhash1release releases/hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
-grep -F "publish_tap:--version v0.2.3 --release-base-url https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/releases%2Fhashtree/v0.2.3/assets --assets-dir ${TMPDIR}/out --tap-repo homebrew-hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
+grep -F "publish_tap:--version v0.2.3 --release-base-url https://upload.iris.to/${README_NPUB}/releases%2Fhashtree/v0.2.3/assets --assets-dir ${TMPDIR}/out --tap-repo homebrew-hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
 test -f "${TMPDIR}/out/install.sh"
-grep -F 'BASE_URL="https://upload.iris.to/npub1qqqqqqqqqqqqqqqqqqqqq/releases%2Fhashtree/v0.2.3"' "${TMPDIR}/out/install.sh" >/dev/null
+grep -F "BASE_URL=\"https://upload.iris.to/${README_NPUB}/releases%2Fhashtree/v0.2.3\"" "${TMPDIR}/out/install.sh" >/dev/null
 grep -F 'ASSET_BASE_URL="${BASE_URL}/assets"' "${TMPDIR}/out/install.sh" >/dev/null
 grep -F 'curl -fsSL "${ASSET_BASE_URL}/${archive}" -o "${tmpdir}/${archive}"' "${TMPDIR}/out/install.sh" >/dev/null
 
@@ -200,6 +210,56 @@ env HOME="${BOOTSTRAP_HOME}" PATH="/usr/bin:/bin" /bin/bash "${TMPDIR}/release-s
 test -x "${BOOTSTRAP_BIN}/htree"
 test -x "${BOOTSTRAP_BIN}/htree-cashu"
 test -x "${BOOTSTRAP_BIN}/git-remote-htree"
+kill "${SERVER_PID}" 2>/dev/null || true
+wait "${SERVER_PID}" 2>/dev/null || true
+SERVER_PID=""
+
+README_GATEWAY_ROOT="${TMPDIR}/readme-gateway"
+README_RELEASE_ROOTS=(
+    "${README_GATEWAY_ROOT}/${README_NPUB}/releases%2Fhashtree"
+    "${README_GATEWAY_ROOT}/${README_NPUB}/releases/hashtree"
+)
+for README_RELEASE_ROOT in "${README_RELEASE_ROOTS[@]}"; do
+    mkdir -p "${README_RELEASE_ROOT}/latest" "${README_RELEASE_ROOT}/v0.2.3/assets"
+    cp "${TMPDIR}/out/install.sh" "${README_RELEASE_ROOT}/latest/install.sh"
+    cp "${TMPDIR}/out"/hashtree-* "${README_RELEASE_ROOT}/v0.2.3/assets/"
+done
+
+PORT_FILE="${TMPDIR}/readme-http-port"
+SERVER_LOG="${TMPDIR}/readme-http-server.log"
+python3 - <<'PY' "${README_GATEWAY_ROOT}" "${PORT_FILE}" >"${SERVER_LOG}" 2>&1 &
+import functools
+import http.server
+import socketserver
+import sys
+
+directory = sys.argv[1]
+port_file = sys.argv[2]
+handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=directory)
+
+with socketserver.TCPServer(("127.0.0.1", 0), handler) as httpd:
+    with open(port_file, "w", encoding="utf-8") as fh:
+        fh.write(str(httpd.server_address[1]))
+    httpd.serve_forever()
+PY
+SERVER_PID=$!
+while [ ! -s "${PORT_FILE}" ]; do
+    sleep 0.1
+done
+PORT="$(cat "${PORT_FILE}")"
+for README_RELEASE_ROOT in "${README_RELEASE_ROOTS[@]}"; do
+    perl -0pi -e "s|https://upload\\.iris\\.to|http://127.0.0.1:${PORT}|g" "${README_RELEASE_ROOT}/latest/install.sh"
+done
+LOCAL_README_INSTALL_CMD="$(printf '%s\n' "${README_INSTALL_CMD}" | sed "s|https://upload.iris.to|http://127.0.0.1:${PORT}|")"
+README_HOME="${TMPDIR}/readme-home"
+mkdir -p "${README_HOME}"
+env HOME="${README_HOME}" PATH="/usr/bin:/bin" /bin/bash -lc "${LOCAL_README_INSTALL_CMD}"
+test -x "${README_HOME}/.local/bin/htree"
+test -x "${README_HOME}/.local/bin/htree-cashu"
+test -x "${README_HOME}/.local/bin/git-remote-htree"
+kill "${SERVER_PID}" 2>/dev/null || true
+wait "${SERVER_PID}" 2>/dev/null || true
+SERVER_PID=""
 
 if grep -F "cargo_publish:" "${TMPDIR}/logs/calls.log" >/dev/null; then
     echo "release_to_htree should not cargo publish unless requested" >&2
