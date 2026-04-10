@@ -8,9 +8,9 @@ Git remote helper for hashtree - push/pull git repos via Nostr and hashtree.
 curl -fsSL https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/releases%2Fhashtree/latest/install.sh | sh
 ```
 
-That installs `htree`, `htree-cashu`, and `git-remote-htree` into `~/.local/bin` by default. For a system-wide install, pass a target directory, for example `sh -s -- /usr/local/bin`.
+That installs `htree`, `htree-cashu`, and `git-remote-htree` into `~/.local/bin` by default. Prebuilt macOS release binaries intentionally omit FUSE mount support so `htree` still runs on machines without macFUSE installed. Linux prebuilt binaries keep FUSE mount support. For a system-wide install, pass a target directory, for example `sh -s -- /usr/local/bin`.
 
-Windows note: this shell bootstrap is not supported on Windows. Download the latest `hashtree-x86_64-pc-windows-msvc.zip` release asset, extract it, and add `htree.exe`, `htree-cashu.exe`, and `git-remote-htree.exe` to your PATH.
+Windows note: this shell bootstrap is not supported on Windows. Download the latest `hashtree-x86_64-pc-windows-msvc.zip` release asset, extract it, and add `htree.exe`, `htree-cashu.exe`, and `git-remote-htree.exe` to your PATH. The Windows release zip does not include FUSE mount support.
 
 Or install with Cargo:
 

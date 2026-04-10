@@ -34,7 +34,6 @@ EOF
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_RUST_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DEFAULT_REPO_DIR="$(cd "${DEFAULT_RUST_DIR}/.." && pwd)"
-HTREE_RELEASE_FEATURES="hashtree-cli/fuse"
 
 VERSION=""
 REPO_DIR="${DEFAULT_REPO_DIR}"
@@ -70,6 +69,23 @@ require_command() {
         echo "Missing required command: $cmd" >&2
         exit 1
     fi
+}
+
+target_release_features() {
+    case "$1" in
+        x86_64-unknown-linux-musl|aarch64-unknown-linux-musl)
+            # Linux release artifacts keep FUSE mount support.
+            printf '%s\n' "hashtree-cli/fuse"
+            ;;
+        x86_64-apple-darwin|aarch64-apple-darwin)
+            # macOS release artifacts intentionally omit FUSE so `htree` still
+            # launches on systems without macFUSE installed.
+            printf '%s\n' ""
+            ;;
+        *)
+            printf '%s\n' ""
+            ;;
+    esac
 }
 
 resolve_linux_builder() {
@@ -195,6 +211,11 @@ else
 fi
 
 echo "✓ Installed htree, htree-cashu, and git-remote-htree"
+if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
+  echo ""
+  echo "Note: macOS release binaries omit FUSE mount support so htree runs without macFUSE."
+  echo "Build from source with: cargo install hashtree-cli --no-default-features --features p2p,lmdb,fuse"
+fi
 if ! path_contains "$INSTALL_DIR"; then
   echo ""
   echo "Add $INSTALL_DIR to your PATH, for example:"
@@ -262,6 +283,11 @@ Usage:
   htree cashu balance                 # inspect Cashu wallet
   git clone htree://npub1.../repo     # clone git repo
 
+macOS note:
+  Prebuilt macOS release binaries omit FUSE mount support so htree still runs
+  without macFUSE installed. Build from source with:
+    cargo install hashtree-cli --no-default-features --features p2p,lmdb,fuse
+
 More info: https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree
 EOF
 }
@@ -277,6 +303,8 @@ ensure_rust_target() {
 
 build_target() {
     local target="$1"
+    local release_features
+    release_features="$(target_release_features "$target")"
     local cargo_args=(
         build
         --release
@@ -284,8 +312,11 @@ build_target() {
         -p git-remote-htree
         -p hashtree-cashu-cli
         -p hashtree-cli
-        --features "$HTREE_RELEASE_FEATURES"
     )
+
+    if [ -n "$release_features" ]; then
+        cargo_args+=(--features "$release_features")
+    fi
 
     if [ "$PACKAGE_ONLY" -eq 1 ]; then
         return

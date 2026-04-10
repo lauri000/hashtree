@@ -10,9 +10,9 @@ Content-addressed storage, git transport, and app runtime on Nostr. Merkle roots
 curl -fsSL https://upload.iris.to/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/releases%2Fhashtree/latest/install.sh | sh
 ```
 
-That installs `htree`, `htree-cashu`, and `git-remote-htree` into `~/.local/bin` by default. The prebuilt macOS/Linux release binaries are built with `fuse` enabled. For a system-wide install, pass a target directory, for example `sh -s -- /usr/local/bin`.
+That installs `htree`, `htree-cashu`, and `git-remote-htree` into `~/.local/bin` by default. Prebuilt macOS release binaries intentionally omit FUSE mount support so `htree` still runs on machines without macFUSE installed. Build from source with `cargo install hashtree-cli --no-default-features --features p2p,lmdb,fuse` if you need `htree mount` on macOS. Linux prebuilt binaries keep FUSE mount support. For a system-wide install, pass a target directory, for example `sh -s -- /usr/local/bin`.
 
-Windows note: the shell bootstrap is not supported there. Download the latest `hashtree-x86_64-pc-windows-msvc.zip` release asset, extract it, and add `htree.exe`, `htree-cashu.exe`, and `git-remote-htree.exe` to your PATH.
+Windows note: the shell bootstrap is not supported there. Download the latest `hashtree-x86_64-pc-windows-msvc.zip` release asset, extract it, and add `htree.exe`, `htree-cashu.exe`, and `git-remote-htree.exe` to your PATH. The Windows release zip does not include FUSE mount support.
 
 ### Build from source
 
@@ -41,7 +41,9 @@ For cargo installs, `fuse` is opt-in. That keeps `cargo install hashtree-cli` wo
 
 - Linux: install FUSE 3 development packages first, typically `pkg-config` plus `libfuse3-dev` (package names vary by distro).
 - macOS: install macFUSE before building with `--features p2p,lmdb,fuse`.
-- Prebuilt release tarballs and the Homebrew package are built with `fuse` enabled, so you only need the runtime FUSE support there.
+- Prebuilt macOS release tarballs and the macOS Homebrew package omit FUSE mount support so `htree` works without macFUSE installed.
+- Linux release tarballs and Linux Homebrew installs keep FUSE mount support.
+- The Windows release zip does not include FUSE mount support.
 
 ### Local install from this repo
 

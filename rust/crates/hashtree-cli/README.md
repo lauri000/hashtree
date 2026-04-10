@@ -26,7 +26,7 @@ For cargo installs, `fuse` is opt-in. Building with `--features p2p,lmdb,fuse` n
 - Linux: typically `pkg-config` plus `libfuse3-dev` (or the distro equivalent).
 - macOS: install macFUSE first.
 
-The prebuilt macOS/Linux release binaries are built with `fuse` enabled.
+Prebuilt macOS release binaries intentionally omit FUSE mount support so `htree` still runs on machines without macFUSE installed. Build from source with `--no-default-features --features p2p,lmdb,fuse` if you need `htree mount` on macOS. Linux release binaries keep FUSE mount support, and Windows builds do not ship it.
 
 ## Commands
 

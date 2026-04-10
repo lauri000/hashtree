@@ -101,8 +101,8 @@ grep -Fx "target add aarch64-apple-darwin" "${LOG_DIR}/rustup.log" >/dev/null
 grep -Fx "target add x86_64-apple-darwin" "${LOG_DIR}/rustup.log" >/dev/null
 grep -F "env:${TARGET_DIR}" "${LOG_DIR}/cargo.log" >/dev/null
 grep -F "pwd:${SOURCE_REPO_DIR}/rust" "${LOG_DIR}/cargo.log" >/dev/null
-grep -F "args:build --release --target aarch64-apple-darwin -p git-remote-htree -p hashtree-cashu-cli -p hashtree-cli --features hashtree-cli/fuse --locked" "${LOG_DIR}/cargo.log" >/dev/null
-grep -F "args:build --release --target x86_64-apple-darwin -p git-remote-htree -p hashtree-cashu-cli -p hashtree-cli --features hashtree-cli/fuse --locked" "${LOG_DIR}/cargo.log" >/dev/null
+grep -F "args:build --release --target aarch64-apple-darwin -p git-remote-htree -p hashtree-cashu-cli -p hashtree-cli --locked" "${LOG_DIR}/cargo.log" >/dev/null
+grep -F "args:build --release --target x86_64-apple-darwin -p git-remote-htree -p hashtree-cashu-cli -p hashtree-cli --locked" "${LOG_DIR}/cargo.log" >/dev/null
 if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
     grep -F "pkg-config-allow-cross:1" "${LOG_DIR}/cargo.log" >/dev/null
 fi
