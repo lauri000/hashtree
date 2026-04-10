@@ -65,4 +65,11 @@ test('windows build script recreates the guest repo before robocopy', () => {
   assert.ok(cleanupIndex >= 0)
   assert.ok(mkdirIndex > cleanupIndex)
   assert.ok(robocopyIndex > mkdirIndex)
+  assert.ok(lines.includes('set "LOCKED_FLAG="'))
+  assert.ok(lines.includes('if exist "%GUEST_REPO%\\rust\\Cargo.lock" set "LOCKED_FLAG=--locked"'))
+  assert.ok(
+    lines.includes(
+      'cargo build --release %LOCKED_FLAG% --target x86_64-pc-windows-msvc -p hashtree-cli --bin htree',
+    ),
+  )
 })
