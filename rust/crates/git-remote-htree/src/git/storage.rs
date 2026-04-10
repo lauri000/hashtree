@@ -27,7 +27,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::runtime::{Handle, Runtime};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use super::object::{parse_tree, GitObject, ObjectId, ObjectType};
 use super::refs::{validate_ref_name, Ref};
@@ -82,44 +82,82 @@ pub enum LocalStore {
 }
 
 impl LocalStore {
-    fn new_for_backend<P: AsRef<Path>>(
+    pub(crate) fn new_for_backend<P: AsRef<Path>>(
         path: P,
         backend: StorageBackend,
         max_bytes: u64,
     ) -> std::result::Result<Self, StoreError> {
+        let path = path.as_ref();
+        #[cfg(feature = "lmdb")]
+        {
+            return Self::new_for_backend_with_openers(
+                path,
+                backend,
+                max_bytes,
+                Self::open_fs_store,
+                Self::open_lmdb_store,
+            );
+        }
+
+        #[cfg(not(feature = "lmdb"))]
         match backend {
-            StorageBackend::Fs => {
-                if max_bytes > 0 {
-                    Ok(LocalStore::Fs(FsBlobStore::with_max_bytes(
-                        path, max_bytes,
-                    )?))
-                } else {
-                    Ok(LocalStore::Fs(FsBlobStore::new(path)?))
-                }
-            }
-            #[cfg(feature = "lmdb")]
-            StorageBackend::Lmdb => {
-                if max_bytes > 0 {
-                    Ok(LocalStore::Lmdb(LmdbBlobStore::with_max_bytes(
-                        path, max_bytes,
-                    )?))
-                } else {
-                    Ok(LocalStore::Lmdb(LmdbBlobStore::new(path)?))
-                }
-            }
+            StorageBackend::Fs => Self::open_fs_store(path, max_bytes),
             #[cfg(not(feature = "lmdb"))]
             StorageBackend::Lmdb => {
                 warn!(
                     "LMDB backend requested but lmdb feature not enabled, using filesystem storage"
                 );
-                if max_bytes > 0 {
-                    Ok(LocalStore::Fs(FsBlobStore::with_max_bytes(
-                        path, max_bytes,
-                    )?))
-                } else {
-                    Ok(LocalStore::Fs(FsBlobStore::new(path)?))
-                }
+                Self::open_fs_store(path, max_bytes)
             }
+        }
+    }
+
+    fn open_fs_store(path: &Path, max_bytes: u64) -> std::result::Result<Self, StoreError> {
+        if max_bytes > 0 {
+            Ok(LocalStore::Fs(FsBlobStore::with_max_bytes(
+                path, max_bytes,
+            )?))
+        } else {
+            Ok(LocalStore::Fs(FsBlobStore::new(path)?))
+        }
+    }
+
+    #[cfg(feature = "lmdb")]
+    fn open_lmdb_store(path: &Path, max_bytes: u64) -> std::result::Result<Self, StoreError> {
+        if max_bytes > 0 {
+            Ok(LocalStore::Lmdb(LmdbBlobStore::with_max_bytes(
+                path, max_bytes,
+            )?))
+        } else {
+            Ok(LocalStore::Lmdb(LmdbBlobStore::new(path)?))
+        }
+    }
+
+    #[cfg(feature = "lmdb")]
+    fn new_for_backend_with_openers<FS, LMDB>(
+        path: &Path,
+        backend: StorageBackend,
+        max_bytes: u64,
+        fs_open: FS,
+        lmdb_open: LMDB,
+    ) -> std::result::Result<Self, StoreError>
+    where
+        FS: Fn(&Path, u64) -> std::result::Result<Self, StoreError>,
+        LMDB: Fn(&Path, u64) -> std::result::Result<Self, StoreError>,
+    {
+        match backend {
+            StorageBackend::Fs => fs_open(path, max_bytes),
+            StorageBackend::Lmdb => match lmdb_open(path, max_bytes) {
+                Ok(store) => Ok(store),
+                Err(err) if should_fallback_from_lmdb_error(&err) => {
+                    warn!(
+                        path = %path.display(),
+                        "LMDB backend is unsupported in this environment, falling back to filesystem storage"
+                    );
+                    fs_open(path, max_bytes)
+                }
+                Err(err) => Err(err),
+            },
         }
     }
 
@@ -154,6 +192,14 @@ impl LocalStore {
             LocalStore::Lmdb(store) => store.get_sync(hash),
         }
     }
+}
+
+#[cfg(feature = "lmdb")]
+pub(crate) fn should_fallback_from_lmdb_error(error: &StoreError) -> bool {
+    matches!(
+        error,
+        StoreError::Io(io_error) if io_error.raw_os_error() == Some(libc::ENOSYS)
+    )
 }
 
 #[async_trait::async_trait]
@@ -1220,6 +1266,8 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::path::Path;
     use std::process::{Child, Command, Stdio};
+    #[cfg(feature = "lmdb")]
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
@@ -1367,6 +1415,62 @@ mod tests {
             refs.get("refs/heads/main"),
             Some(&"abc123def456".to_string())
         );
+    }
+
+    #[cfg(feature = "lmdb")]
+    #[test]
+    fn test_local_store_falls_back_to_fs_when_lmdb_open_returns_enosys() {
+        let temp_dir = TempDir::new().unwrap();
+        let fs_calls = AtomicUsize::new(0);
+        let lmdb_calls = AtomicUsize::new(0);
+
+        let store = LocalStore::new_for_backend_with_openers(
+            temp_dir.path(),
+            StorageBackend::Lmdb,
+            0,
+            |path, max_bytes| {
+                fs_calls.fetch_add(1, Ordering::SeqCst);
+                LocalStore::open_fs_store(path, max_bytes)
+            },
+            |_path, _max_bytes| {
+                lmdb_calls.fetch_add(1, Ordering::SeqCst);
+                Err(StoreError::Io(std::io::Error::from_raw_os_error(
+                    libc::ENOSYS,
+                )))
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(store, LocalStore::Fs(_)));
+        assert_eq!(lmdb_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fs_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "lmdb")]
+    #[test]
+    fn test_local_store_does_not_fallback_on_unrelated_lmdb_errors() {
+        let temp_dir = TempDir::new().unwrap();
+        let fs_calls = AtomicUsize::new(0);
+
+        let result = LocalStore::new_for_backend_with_openers(
+            temp_dir.path(),
+            StorageBackend::Lmdb,
+            0,
+            |path, max_bytes| {
+                fs_calls.fetch_add(1, Ordering::SeqCst);
+                LocalStore::open_fs_store(path, max_bytes)
+            },
+            |_path, _max_bytes| {
+                Err(StoreError::Io(std::io::Error::from_raw_os_error(
+                    libc::EACCES,
+                )))
+            },
+        );
+
+        assert!(
+            matches!(result, Err(StoreError::Io(io_error)) if io_error.raw_os_error() == Some(libc::EACCES))
+        );
+        assert_eq!(fs_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

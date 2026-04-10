@@ -69,41 +69,36 @@ impl LmdbBlobStore {
                 .max_dbs(DATABASE_COUNT)
                 .max_readers(DEFAULT_MAX_READERS)
                 .open(path)
-                .map_err(|e| StoreError::Other(e.to_string()))?
+                .map_err(map_heed_error)?
         };
         let _ = env.clear_stale_readers();
         if env.info().map_size < map_size {
-            unsafe { env.resize(map_size) }.map_err(|e| StoreError::Other(e.to_string()))?;
+            unsafe { env.resize(map_size) }.map_err(map_heed_error)?;
         }
 
-        let mut wtxn = env
-            .write_txn()
-            .map_err(|e| StoreError::Other(e.to_string()))?;
+        let mut wtxn = env.write_txn().map_err(map_heed_error)?;
         let blobs = env
             .create_database(&mut wtxn, Some("blobs"))
-            .map_err(|e| StoreError::Other(e.to_string()))?;
+            .map_err(map_heed_error)?;
         let metadata = env
             .create_database(&mut wtxn, Some("metadata"))
-            .map_err(|e| StoreError::Other(e.to_string()))?;
+            .map_err(map_heed_error)?;
         let eviction_order = env
             .create_database(&mut wtxn, Some("eviction_order"))
-            .map_err(|e| StoreError::Other(e.to_string()))?;
+            .map_err(map_heed_error)?;
         let pins = env
             .create_database(&mut wtxn, Some("pins"))
-            .map_err(|e| StoreError::Other(e.to_string()))?;
-        wtxn.commit()
-            .map_err(|e| StoreError::Other(e.to_string()))?;
+            .map_err(map_heed_error)?;
+        wtxn.commit().map_err(map_heed_error)?;
 
         let (next_order, current_bytes) = {
-            let rtxn = env
-                .read_txn()
-                .map_err(|e| StoreError::Other(e.to_string()))?;
+            let rtxn = env.read_txn().map_err(map_heed_error)?;
             let next = eviction_order
                 .iter(&rtxn)
-                .map_err(|e| StoreError::Other(e.to_string()))?
+                .map_err(map_heed_error)?
                 .last()
                 .transpose()
-                .map_err(|e| StoreError::Other(e.to_string()))?
+                .map_err(map_heed_error)?
                 .map(|(key, _)| {
                     Self::decode_order_from_order_key(key).map(|order| order.saturating_add(1))
                 })
@@ -111,9 +106,9 @@ impl LmdbBlobStore {
                 .unwrap_or(0);
             let current = metadata
                 .iter(&rtxn)
-                .map_err(|e| StoreError::Other(e.to_string()))?
+                .map_err(map_heed_error)?
                 .map(|item| {
-                    item.map_err(|e| StoreError::Other(e.to_string()))
+                    item.map_err(map_heed_error)
                         .and_then(|(_, bytes)| Self::decode_blob_meta(bytes))
                         .map(|meta| meta.size)
                 })
@@ -621,6 +616,13 @@ impl LmdbBlobStore {
         Ok(u32::from_be_bytes(bytes.try_into().map_err(|_| {
             StoreError::Other("invalid pin count bytes".into())
         })?))
+    }
+}
+
+fn map_heed_error(error: HeedError) -> StoreError {
+    match error {
+        HeedError::Io(io_error) => StoreError::Io(io_error),
+        other => StoreError::Other(other.to_string()),
     }
 }
 
