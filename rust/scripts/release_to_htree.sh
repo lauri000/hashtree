@@ -16,6 +16,7 @@ Options:
   --tree-name <name>                 Mutable release tree name (default: releases/<repo>)
   --homebrew-tap-repo <name>         Homebrew tap repo name (default: homebrew-<repo>)
   --skip-homebrew-tap                Skip updating the Homebrew tap
+  --skip-post-publish-install-checks Skip live install smoke checks after publish
   --cargo-publish                    Publish Rust crates to crates.io after releasing artifacts
   --output-dir <dir>                 Release directory to create/use
   --repo-dir <dir>                   Repository root to build/package from
@@ -57,6 +58,7 @@ VERSION_PATH=""
 TREE_NAME="releases/${REPO_NAME}"
 HOMEBREW_TAP_REPO="homebrew-${REPO_NAME}"
 SKIP_HOMEBREW_TAP=0
+SKIP_POST_PUBLISH_INSTALL_CHECKS=0
 CARGO_PUBLISH=0
 SKIP_IRIS=0
 SKIP_IRIS_VERIFY=0
@@ -104,6 +106,10 @@ while [ $# -gt 0 ]; do
             ;;
         --skip-homebrew-tap)
             SKIP_HOMEBREW_TAP=1
+            shift
+            ;;
+        --skip-post-publish-install-checks)
+            SKIP_POST_PUBLISH_INSTALL_CHECKS=1
             shift
             ;;
         --cargo-publish)
@@ -418,6 +424,27 @@ if [ "$SKIP_HOMEBREW_TAP" -eq 0 ]; then
         fi
     fi
 fi
+
+run_post_publish_install_checks() {
+    local install_matrix_script
+
+    if [ "$SKIP_POST_PUBLISH_INSTALL_CHECKS" -eq 1 ]; then
+        return 0
+    fi
+
+    install_matrix_script="${SCRIPT_DIR}/test_install_matrix.sh"
+    if [ ! -x "$install_matrix_script" ]; then
+        echo "Warning: post-publish install matrix helper not found at ${install_matrix_script}; skipping live install checks." >&2
+        return 0
+    fi
+
+    echo "Running post-publish install matrix against live artifacts..."
+    if ! "$install_matrix_script"; then
+        echo "Warning: post-publish install checks reported failures; release artifacts remain published." >&2
+    fi
+}
+
+run_post_publish_install_checks
 
 if [ "$CARGO_PUBLISH" -eq 1 ]; then
     "${SCRIPT_DIR}/publish.sh"

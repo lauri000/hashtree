@@ -7,11 +7,13 @@ Changes since the `0.2.31` crates.io release.
 ### Improved
 
 - Added a real install-matrix smoke runner that exercises the documented install flow across the native host, Docker Linux targets, a Windows VM, and Homebrew with bounded Docker timeouts and per-platform logs where supported.
+- The Windows VM artifact builder now stages the Rust workspace through a tar archive instead of bulk-copying the repo tree from the Parallels shared folder, which avoids the previous shared-folder copy failures on release builds.
 
 ### Fixed
 
 - Fixed `git-remote-htree` on Linux environments where LMDB initialization returns `ENOSYS` by falling back to filesystem-backed local storage instead of failing the remote-helper startup.
 - Improved the Windows VM smoke path to use the built-in `curl.exe` and `tar.exe` tools instead of the noisy `Invoke-WebRequest` path.
+- Release publishing now runs the live install matrix after publishing the release tree and Homebrew tap, but only warns on failures so it does not strand an otherwise published release.
 
 ## 0.2.31 - 2026-04-10
 

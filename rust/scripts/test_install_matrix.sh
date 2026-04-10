@@ -20,7 +20,7 @@ Options:
   --platforms <csv>               Subset: host,docker-arm64,docker-amd64,windows,brew
   --docker-bin <path>             Docker binary to use (default: docker)
   --docker-image <image>          Debian image used for Linux smoke tests
-  --timeout-seconds <seconds>     Timeout for Docker smoke runs (default: 180)
+  --timeout-seconds <seconds>     Timeout for Docker and Windows smoke runs (default: 180)
   --windows-zip-url <url>         Override the Windows zip asset URL
   --windows-vm-name <name>        Override the Parallels Windows VM name
   --brew-tap-name <name>          Override the Homebrew tap name
@@ -57,12 +57,19 @@ KEEP_TEMP=0
 RESULT_PLATFORMS=()
 RESULT_STATUSES=()
 RESULT_NOTES=()
+EXTRA_TEMP_PATHS=()
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hashtree-install-matrix.XXXXXX")"
 LOG_DIR="${WORK_DIR}/logs"
 mkdir -p "$LOG_DIR"
 
 cleanup() {
+    local path
+    for path in "${EXTRA_TEMP_PATHS[@]:-}"; do
+        if [ "$KEEP_TEMP" -eq 0 ] && [ -n "$path" ] && [ -e "$path" ]; then
+            rm -rf "$path"
+        fi
+    done
     if [ "$KEEP_TEMP" -eq 0 ] && [ -n "${WORK_DIR:-}" ] && [ -d "$WORK_DIR" ]; then
         rm -rf "$WORK_DIR"
     fi
@@ -287,6 +294,29 @@ EOF
     return 1
 }
 
+shared_windows_path() {
+    if ! command -v python3 >/dev/null 2>&1; then
+        return 1
+    fi
+    python3 - "$1" "$HOME" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1]).expanduser().resolve()
+home = pathlib.Path(sys.argv[2]).expanduser().resolve()
+
+try:
+    rel = path.relative_to(home)
+except ValueError:
+    raise SystemExit(1)
+
+if str(rel) == '.':
+    print(r'C:\Mac\Home')
+else:
+    print(r'C:\Mac\Home' + '\\' + str(rel).replace('/', '\\'))
+PY
+}
+
 docker_platform_available() {
     "$DOCKER_BIN" run --rm --platform "$1" alpine:3.22 true >/dev/null 2>&1
 }
@@ -398,7 +428,8 @@ powershell_escape() {
 }
 
 run_windows_smoke() {
-    local vm_name zip_url label ps_script encoded
+    local vm_name zip_url label log_path shared_dir shared_script_path shared_log_path shared_result_path windows_script_path
+    local windows_log_path windows_result_path start_log_path launch_rc status_line detail_line elapsed poll_interval
     label="windows-vm-x86_64"
 
     if [ "$(uname -s 2>/dev/null)" != "Darwin" ]; then
@@ -429,47 +460,119 @@ run_windows_smoke() {
         return 0
     fi
 
-    ps_script=$(cat <<EOF
+    mkdir -p "${HOME}/tmp"
+    shared_dir="$(mktemp -d "${HOME}/tmp/hashtree-install-matrix-windows.XXXXXX")"
+    EXTRA_TEMP_PATHS+=("$shared_dir")
+    windows_script_path="${shared_dir}/run.ps1"
+    windows_log_path="${shared_dir}/guest.log"
+    windows_result_path="${shared_dir}/result.txt"
+    shared_script_path="$(shared_windows_path "$windows_script_path" || true)"
+    shared_log_path="$(shared_windows_path "$windows_log_path" || true)"
+    shared_result_path="$(shared_windows_path "$windows_result_path" || true)"
+    log_path="$(platform_log_path "$label")"
+    start_log_path="$(platform_log_path "${label}-launch")"
+
+    if [ -z "$shared_script_path" ] || [ -z "$shared_log_path" ] || [ -z "$shared_result_path" ]; then
+        record_result "$label" "FAIL" "could not map a shared host temp directory into Parallels"
+        return 0
+    fi
+
+    cat >"$windows_script_path" <<EOF
 \$ErrorActionPreference = 'Stop'
 \$ProgressPreference = 'SilentlyContinue'
 \$remote = '$(powershell_escape "$TEST_REMOTE")'
 \$zipUrl = '$(powershell_escape "$zip_url")'
+\$logPath = '$(powershell_escape "$shared_log_path")'
+\$resultPath = '$(powershell_escape "$shared_result_path")'
+\$status = 'FAIL'
+\$detail = ''
+
+function Write-GuestLog {
+  param([string]\$Message)
+  Add-Content -Path \$logPath -Value \$Message
+}
+
+New-Item -ItemType Directory -Path (Split-Path -Parent \$logPath) -Force | Out-Null
+Set-Content -Path \$logPath -Value ''
+
 \$work = Join-Path \$env:TEMP ('hashtree-install-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path \$work | Out-Null
 try {
   \$zipPath = Join-Path \$work 'hashtree.zip'
+  Write-GuestLog "download \$zipUrl"
   & curl.exe -fsSL \$zipUrl -o \$zipPath
   if (\$LASTEXITCODE -ne 0) { throw "curl.exe failed with exit code \$LASTEXITCODE" }
+  Write-GuestLog 'download-ok'
   tar.exe -xf \$zipPath -C \$work
   if (\$LASTEXITCODE -ne 0) { throw "tar.exe failed with exit code \$LASTEXITCODE" }
+  Write-GuestLog 'expand-ok'
   \$htree = Get-ChildItem -Path \$work -Recurse -Filter 'htree.exe' | Select-Object -First 1
   \$helper = Get-ChildItem -Path \$work -Recurse -Filter 'git-remote-htree.exe' | Select-Object -First 1
   if (-not \$htree) { throw 'htree.exe not found in extracted archive' }
   if (-not \$helper) { throw 'git-remote-htree.exe not found in extracted archive' }
   & \$htree.FullName --help | Out-Null
-  Write-Output 'htree-help-ok'
+  Write-GuestLog 'htree-help-ok'
   \$cap = 'capabilities' | & \$helper.FullName origin \$remote
   if (\$cap -notcontains 'fetch' -or \$cap -notcontains 'push' -or \$cap -notcontains 'option') {
     throw 'git-remote-htree.exe did not advertise fetch/push/option'
   }
-  Write-Output 'helper-capabilities-ok'
-  exit 0
+  Write-GuestLog 'helper-capabilities-ok'
+  \$status = 'PASS'
+  \$detail = 'downloaded the Windows zip and verified htree.exe plus git-remote-htree.exe'
+}
+catch {
+  \$detail = \$_.Exception.Message
+  Write-GuestLog \$detail
 }
 finally {
+  Set-Content -Path \$resultPath -Value (\$status + [Environment]::NewLine + \$detail + [Environment]::NewLine)
   Remove-Item -Path \$work -Recurse -Force -ErrorAction SilentlyContinue
 }
 EOF
-)
 
-    encoded="$(
-        printf '%s' "$ps_script" |
-            python3 -c 'import base64, sys; print(base64.b64encode(sys.stdin.buffer.read().decode("utf-8").encode("utf-16le")).decode("ascii"))'
-    )"
+    if ! prlctl exec "$vm_name" --current-user cmd.exe /c start "" /b powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$shared_script_path" >"$start_log_path" 2>&1; then
+        record_result "$label" "FAIL" "$(failure_note_from_log "$start_log_path")"
+        return 0
+    fi
 
-    if prlctl exec "$vm_name" --current-user powershell.exe -NoProfile -NonInteractive -EncodedCommand "$encoded"; then
-        record_result "$label" "PASS" "downloaded the Windows zip and verified htree.exe plus git-remote-htree.exe"
+    elapsed=0
+    poll_interval=1
+    while [ ! -f "$windows_result_path" ] && [ "$elapsed" -lt "$COMMAND_TIMEOUT_SECONDS" ]; do
+        sleep "$poll_interval"
+        elapsed=$((elapsed + poll_interval))
+    done
+
+    if [ ! -f "$windows_result_path" ]; then
+        cp "$start_log_path" "$log_path" 2>/dev/null || true
+        if [ -f "$windows_log_path" ]; then
+            {
+                printf '\n[guest log]\n'
+                cat "$windows_log_path"
+            } >>"$log_path"
+        else
+            printf '\nTimed out after %ss waiting for %s\n' "$COMMAND_TIMEOUT_SECONDS" "$windows_result_path" >>"$log_path"
+        fi
+        record_result "$label" "FAIL" "$(failure_note_from_log "$log_path")"
+        return 0
+    fi
+
+    cp "$start_log_path" "$log_path" 2>/dev/null || true
+    if [ -f "$windows_log_path" ]; then
+        {
+            printf '\n[guest log]\n'
+            cat "$windows_log_path"
+        } >>"$log_path"
+    fi
+
+    status_line="$(sed -n '1p' "$windows_result_path" | tr -d '\r')"
+    detail_line="$(sed -n '2p' "$windows_result_path" | tr -d '\r')"
+    if [ "$status_line" = "PASS" ]; then
+        record_result "$label" "PASS" "${detail_line:-downloaded the Windows zip and verified htree.exe plus git-remote-htree.exe}"
     else
-        record_result "$label" "FAIL" "prlctl exec failed; see command output above"
+        if [ -n "$detail_line" ]; then
+            printf '\n[guest result]\n%s\n' "$detail_line" >>"$log_path"
+        fi
+        record_result "$label" "FAIL" "$(failure_note_from_log "$log_path")"
     fi
 }
 

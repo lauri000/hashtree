@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import {
   autoDetectWindowsVmName,
   defaultSharedWindowsPath,
+  hostPathFromSharedWindowsPath,
   parseArgs,
   windowsBuildScriptLines,
 } from '../scripts/build_windows_vm_artifacts.mjs'
@@ -14,6 +15,14 @@ test('defaultSharedWindowsPath maps home-relative paths into Parallels shared fo
     'C:\\Mac\\Home\\src\\hashtree',
   )
   assert.equal(defaultSharedWindowsPath('/tmp/hashtree', '/Users/sirius'), null)
+})
+
+test('hostPathFromSharedWindowsPath maps Parallels shared folders back onto the host', () => {
+  assert.equal(
+    hostPathFromSharedWindowsPath('C:\\Mac\\Home\\src\\hashtree', '/Users/sirius'),
+    '/Users/sirius/src/hashtree',
+  )
+  assert.equal(hostPathFromSharedWindowsPath('D:\\src\\hashtree', '/Users/sirius'), null)
 })
 
 test('autoDetectWindowsVmName returns the single running Windows VM', () => {
@@ -51,20 +60,24 @@ test('parseArgs reads overrides and defaults', () => {
   })
 })
 
-test('windows build script recreates the guest repo before robocopy', () => {
+test('windows build script extracts a source archive before cargo build', () => {
   const lines = windowsBuildScriptLines({
-    sharedRepoPath: 'C:\\Mac\\Home\\src\\hashtree',
+    sharedSourceArchivePath: 'C:\\Mac\\Home\\src\\hashtree\\rust\\dist\\windows-vm-source.tar',
     guestRepoPath: 'C:\\Users\\sirius\\src\\hashtree',
     sharedOutputDir: 'C:\\Mac\\Home\\src\\hashtree\\rust\\dist\\windows-vm-out',
   })
 
   const cleanupIndex = lines.indexOf('if exist "%GUEST_REPO%" rmdir /S /Q "%GUEST_REPO%"')
   const mkdirIndex = lines.indexOf('mkdir "%GUEST_REPO%"')
-  const robocopyIndex = lines.findIndex((line) => line.startsWith('robocopy '))
+  const extractIndex = lines.indexOf('tar.exe -xf "%SOURCE_ARCHIVE%" -C "%GUEST_REPO%"')
 
   assert.ok(cleanupIndex >= 0)
   assert.ok(mkdirIndex > cleanupIndex)
-  assert.ok(robocopyIndex > mkdirIndex)
+  assert.ok(extractIndex > mkdirIndex)
+  assert.equal(lines.findIndex((line) => line.startsWith('robocopy ')), -1)
+  assert.ok(
+    lines.includes('set "SOURCE_ARCHIVE=C:\\Mac\\Home\\src\\hashtree\\rust\\dist\\windows-vm-source.tar"'),
+  )
   assert.ok(lines.includes('set "LOCKED_FLAG="'))
   assert.ok(lines.includes('if exist "%GUEST_REPO%\\rust\\Cargo.lock" set "LOCKED_FLAG=--locked"'))
   assert.ok(

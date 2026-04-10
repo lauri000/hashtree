@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import process from 'node:process'
@@ -80,6 +80,24 @@ export function defaultSharedWindowsPath(hostPath, homeDir = os.homedir()) {
   return `C:\\Mac\\Home\\${relativePath}`
 }
 
+export function hostPathFromSharedWindowsPath(sharedPath, homeDir = os.homedir()) {
+  const normalizedPath = String(sharedPath || '').replace(/\//g, '\\')
+  const normalizedHome = 'C:\\Mac\\Home'
+
+  if (!normalizedPath) {
+    return null
+  }
+  if (normalizedPath.toLowerCase() === normalizedHome.toLowerCase()) {
+    return resolve(homeDir)
+  }
+  if (!normalizedPath.toLowerCase().startsWith(`${normalizedHome.toLowerCase()}\\`)) {
+    return null
+  }
+
+  const relativePath = normalizedPath.slice(normalizedHome.length + 1).split('\\')
+  return resolve(homeDir, ...relativePath)
+}
+
 export function autoDetectWindowsVmName(prlctlListOutput) {
   const candidates = []
   for (const rawLine of prlctlListOutput.split(/\r?\n/)) {
@@ -103,10 +121,11 @@ export function autoDetectWindowsVmName(prlctlListOutput) {
   return candidates.length === 1 ? candidates[0] : null
 }
 
-function run(command, args, { capture = false } = {}) {
+function run(command, args, { capture = false, env = {} } = {}) {
   const result = spawnSync(command, args, {
     encoding: 'utf8',
     stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+    env: { ...process.env, ...env },
   })
 
   if (result.error) {
@@ -128,7 +147,7 @@ function batchQuote(value) {
 }
 
 export function windowsBuildScriptLines({
-  sharedRepoPath,
+  sharedSourceArchivePath,
   guestRepoPath,
   sharedOutputDir,
 }) {
@@ -136,7 +155,7 @@ export function windowsBuildScriptLines({
   return [
     '@echo off',
     'setlocal',
-    `set "SHARED_REPO=${sharedRepoPath}"`,
+    `set "SOURCE_ARCHIVE=${sharedSourceArchivePath}"`,
     `set "GUEST_REPO=${guestRepoValue}"`,
     `set "SHARED_OUTPUT=${sharedOutputDir}"`,
     'for %%I in ("%GUEST_REPO%") do set "GUEST_ROOT=%%~dpI"',
@@ -145,9 +164,10 @@ export function windowsBuildScriptLines({
     'if exist "%GUEST_REPO%" exit /b 20',
     'mkdir "%GUEST_REPO%"',
     'if errorlevel 1 exit /b %errorlevel%',
+    'if not exist "%SOURCE_ARCHIVE%" exit /b 21',
     'if not exist "%SHARED_OUTPUT%" mkdir "%SHARED_OUTPUT%"',
-    'robocopy "%SHARED_REPO%" "%GUEST_REPO%" /E /XD "%SHARED_REPO%\\.git" "%SHARED_REPO%\\dist" "%SHARED_REPO%\\node_modules" "%SHARED_REPO%\\.pnpm-store" "%SHARED_REPO%\\artifacts" "%SHARED_REPO%\\rust\\target" "%SHARED_REPO%\\apps\\iris\\src-tauri\\target" /XF .env.release.local .env.zapstore.local',
-    'if errorlevel 8 exit /b %errorlevel%',
+    'tar.exe -xf "%SOURCE_ARCHIVE%" -C "%GUEST_REPO%"',
+    'if errorlevel 1 exit /b %errorlevel%',
     'set "VSWHERE=C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe"',
     'if not exist "%VSWHERE%" exit /b 10',
     'set "VS_INSTALL_PATH="',
@@ -180,12 +200,12 @@ export function windowsBuildScriptLines({
 
 function writeWindowsBuildScript({
   scriptPath,
-  sharedRepoPath,
+  sharedSourceArchivePath,
   guestRepoPath,
   sharedOutputDir,
 }) {
   const lines = windowsBuildScriptLines({
-    sharedRepoPath,
+    sharedSourceArchivePath,
     guestRepoPath,
     sharedOutputDir,
   })
@@ -228,17 +248,39 @@ export function buildWindowsVmArtifacts({
     )
   }
 
+  const hostRepoDir = hostPathFromSharedWindowsPath(effectiveSharedRepoPath)
+  if (!hostRepoDir) {
+    throw new Error(
+      'Could not derive the host repo path from the current Parallels shared repo path. Pass --shared-repo-path under your home directory.',
+    )
+  }
+  if (!existsSync(resolve(hostRepoDir, 'rust'))) {
+    throw new Error(`Expected ${hostRepoDir} to contain a rust workspace directory.`)
+  }
+
   rmSync(resolvedOutputDir, { recursive: true, force: true })
   mkdirSync(resolvedOutputDir, { recursive: true })
+  mkdirSync(join(rustDir, 'dist'), { recursive: true })
   const localScriptPath = join(rustDir, 'dist', `windows-vm-build-${Date.now()}.cmd`)
+  const localArchivePath = join(rustDir, 'dist', `windows-vm-source-${Date.now()}.tar`)
   const sharedScriptPath = defaultSharedWindowsPath(localScriptPath)
+  const sharedSourceArchivePath = defaultSharedWindowsPath(localArchivePath)
   if (!sharedScriptPath) {
     throw new Error('Could not derive a Parallels shared path for the temporary Windows build script.')
   }
+  if (!sharedSourceArchivePath) {
+    throw new Error('Could not derive a Parallels shared path for the temporary Windows source archive.')
+  }
+
+  run(
+    'tar',
+    ['-cf', localArchivePath, '--exclude=rust/target', '--exclude=rust/dist', '-C', hostRepoDir, 'rust'],
+    { env: { COPYFILE_DISABLE: '1' } },
+  )
 
   writeWindowsBuildScript({
     scriptPath: localScriptPath,
-    sharedRepoPath: effectiveSharedRepoPath,
+    sharedSourceArchivePath,
     guestRepoPath,
     sharedOutputDir,
   })
@@ -254,6 +296,7 @@ export function buildWindowsVmArtifacts({
     ])
   } finally {
     rmSync(localScriptPath, { force: true })
+    rmSync(localArchivePath, { force: true })
   }
 
   return {

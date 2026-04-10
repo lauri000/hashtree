@@ -13,7 +13,9 @@ trap cleanup EXIT
 
 BIN_DIR="${TMPDIR}/bin"
 LOG_FILE="${TMPDIR}/calls.log"
+TEST_HOME="${TMPDIR}/home"
 mkdir -p "$BIN_DIR"
+mkdir -p "$TEST_HOME"
 
 cat >"${BIN_DIR}/uname" <<'EOF'
 #!/bin/bash
@@ -141,6 +143,19 @@ case "${1:-}" in
         printf '{00000000-0000-0000-0000-000000000000}  running      -               Windows 11\n'
         ;;
     exec)
+        previous=""
+        for arg in "$@"; do
+            if [ "$previous" = "-File" ]; then
+                host_path="${HOME}${arg#C:\\Mac\\Home}"
+                host_path="${host_path//\\//}"
+                script_dir="$(dirname "$host_path")"
+                mkdir -p "$script_dir"
+                printf 'download-ok\nhelper-capabilities-ok\n' >"${script_dir}/guest.log"
+                printf 'PASS\ndownloaded the Windows zip and verified htree.exe plus git-remote-htree.exe\n' >"${script_dir}/result.txt"
+                break
+            fi
+            previous="$arg"
+        done
         exit 0
         ;;
 esac
@@ -149,7 +164,7 @@ chmod +x "${BIN_DIR}/prlctl"
 
 OUTPUT_FILE="${TMPDIR}/matrix.out"
 set +e
-PATH="${BIN_DIR}:/usr/bin:/bin" TEST_LOG_FILE="${LOG_FILE}" \
+PATH="${BIN_DIR}:/usr/bin:/bin" HOME="${TEST_HOME}" TEST_LOG_FILE="${LOG_FILE}" \
     "${RUN_SCRIPT}" \
     --install-cmd "fake-install" \
     --windows-zip-url "https://example.test/hashtree.zip" \
@@ -172,6 +187,6 @@ grep -F "docker:run --rm --platform linux/arm64 alpine:3.22 true" "${LOG_FILE}" 
 grep -F "docker:run --rm --platform linux/amd64 alpine:3.22 true" "${LOG_FILE}" >/dev/null
 grep -F "brew:install htree" "${LOG_FILE}" >/dev/null
 grep -F "prlctl:list -a" "${LOG_FILE}" >/dev/null
-grep -F "prlctl:exec Windows 11 --current-user powershell.exe -NoProfile -NonInteractive -EncodedCommand" "${LOG_FILE}" >/dev/null
+grep -F "prlctl:exec Windows 11 --current-user cmd.exe /c start" "${LOG_FILE}" >/dev/null
 
 echo "test_install_matrix_script.sh passed"

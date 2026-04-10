@@ -132,6 +132,16 @@ echo "cargo_publish:$*" >>"${TEST_LOG_DIR}/calls.log"
 EOF
 chmod +x "${REPO_ROOT}/rust/scripts/publish.sh"
 
+cat >"${REPO_ROOT}/rust/scripts/test_install_matrix.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+echo "install_matrix:$*" >>"${TEST_LOG_DIR}/calls.log"
+if [ "${FAIL_INSTALL_MATRIX:-0}" = "1" ]; then
+    exit 1
+fi
+EOF
+chmod +x "${REPO_ROOT}/rust/scripts/test_install_matrix.sh"
+
 cat >"${TMPDIR}/bin/htree" <<EOF
 #!/bin/bash
 set -euo pipefail
@@ -168,6 +178,7 @@ grep -F "\"commit\": \"${SOURCE_COMMIT}\"" "${TMPDIR}/release-stage/release.json
 
 grep -F "publish_release:v0.2.3 nhash1release releases/hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
 grep -F "publish_tap:--version v0.2.3 --release-base-url https://upload.iris.to/${README_NPUB}/releases%2Fhashtree/v0.2.3/assets --assets-dir ${TMPDIR}/out --tap-repo homebrew-hashtree" "${TMPDIR}/logs/calls.log" >/dev/null
+grep -F "install_matrix:" "${TMPDIR}/logs/calls.log" >/dev/null
 test -f "${TMPDIR}/out/install.sh"
 grep -F "BASE_URL=\"https://upload.iris.to/${README_NPUB}/releases%2Fhashtree/v0.2.3\"" "${TMPDIR}/out/install.sh" >/dev/null
 grep -F 'ASSET_BASE_URL="${BASE_URL}/assets"' "${TMPDIR}/out/install.sh" >/dev/null
@@ -280,15 +291,16 @@ PATH="${TMPDIR}/bin:$PATH" TEST_LOG_DIR="${TMPDIR}/logs" \
 grep -F "cargo_publish:" "${TMPDIR}/logs/calls.log" >/dev/null
 publish_release_line="$(grep -n '^publish_release:' "${TMPDIR}/logs/calls.log" | cut -d: -f1)"
 publish_tap_line="$(grep -n '^publish_tap:' "${TMPDIR}/logs/calls.log" | cut -d: -f1)"
+install_matrix_line="$(grep -n '^install_matrix:' "${TMPDIR}/logs/calls.log" | cut -d: -f1)"
 cargo_publish_line="$(grep -n '^cargo_publish:' "${TMPDIR}/logs/calls.log" | cut -d: -f1)"
 
-if [ -z "$publish_release_line" ] || [ -z "$publish_tap_line" ] || [ -z "$cargo_publish_line" ]; then
-    echo "Expected publish_release, publish_tap, and cargo_publish calls" >&2
+if [ -z "$publish_release_line" ] || [ -z "$publish_tap_line" ] || [ -z "$install_matrix_line" ] || [ -z "$cargo_publish_line" ]; then
+    echo "Expected publish_release, publish_tap, install_matrix, and cargo_publish calls" >&2
     exit 1
 fi
 
-if [ "$cargo_publish_line" -le "$publish_tap_line" ] || [ "$publish_tap_line" -le "$publish_release_line" ]; then
-    echo "Expected cargo publish to run after release and tap publication" >&2
+if [ "$publish_tap_line" -le "$publish_release_line" ] || [ "$install_matrix_line" -le "$publish_tap_line" ] || [ "$cargo_publish_line" -le "$install_matrix_line" ]; then
+    echo "Expected cargo publish to run after release publication, tap publication, and live install checks" >&2
     exit 1
 fi
 
@@ -301,5 +313,15 @@ PATH="${TMPDIR}/bin:$PATH" TEST_LOG_DIR="${TMPDIR}/logs" FAIL_HOME_TAP=1 \
     --output-dir "${TMPDIR}/out" >"${STDOUT_FILE}" 2>"${STDERR_FILE}"
 
 grep -F "Warning: Homebrew tap update failed; release artifacts are still published." "${STDERR_FILE}" >/dev/null
+
+rm -f "${TMPDIR}/logs/calls.log"
+STDOUT_FILE="${TMPDIR}/release_to_htree_install_checks.out"
+STDERR_FILE="${TMPDIR}/release_to_htree_install_checks.err"
+PATH="${TMPDIR}/bin:$PATH" TEST_LOG_DIR="${TMPDIR}/logs" FAIL_INSTALL_MATRIX=1 \
+    "${REPO_ROOT}/rust/scripts/release_to_htree.sh" \
+    --version v0.2.3 \
+    --output-dir "${TMPDIR}/out" >"${STDOUT_FILE}" 2>"${STDERR_FILE}"
+
+grep -F "Warning: post-publish install checks reported failures; release artifacts remain published." "${STDERR_FILE}" >/dev/null
 
 echo "test_release_to_htree_homebrew.sh passed"
