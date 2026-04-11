@@ -30,6 +30,7 @@ import { MeshRouterStore } from './capabilities/meshRouterStore.js';
 import { resolveRootPathFromRelays, watchRootPathFromRelays } from './capabilities/rootResolver.js';
 import { assertEncryptedUploadCid, markEncryptedHashes, shouldServeHashToPeer } from './privacyGuards.js';
 import { streamFileRangeChunks } from './mediaStreaming.js';
+import { cloneTransferableBytes } from './transferableBytes.js';
 
 const DEFAULT_STORE_NAME = 'hashtree-worker';
 const DEFAULT_STORAGE_MAX_BYTES = 1024 * 1024 * 1024;
@@ -368,13 +369,6 @@ function postMediaError(port: MessagePort, requestId: string, message: string): 
   port.postMessage(response);
 }
 
-function cloneTransferableChunk(chunk: Uint8Array): Uint8Array {
-  if (chunk.byteOffset === 0 && chunk.byteLength === chunk.buffer.byteLength) {
-    return chunk;
-  }
-  return chunk.slice();
-}
-
 async function handleMediaFileRequest(port: MessagePort, request: MediaFileRequest): Promise<void> {
   if (!tree) {
     emitDiagnostic('error', 'media', 'worker-not-initialized', 'Worker not initialized for media request', {
@@ -494,7 +488,7 @@ async function handleMediaFileRequest(port: MessagePort, request: MediaFileReque
 
   if (!request.head) {
     for await (const chunk of streamFileRangeChunks(tree, cid, start, end, MEDIA_CHUNK_SIZE)) {
-      const transferableChunk = cloneTransferableChunk(chunk);
+      const transferableChunk = cloneTransferableBytes(chunk);
       const chunkMessage: MediaChunkResponse = {
         type: 'chunk',
         requestId: request.requestId,

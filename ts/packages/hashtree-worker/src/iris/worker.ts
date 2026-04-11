@@ -38,6 +38,7 @@ import {
 } from './signing';
 import { WebRTCController } from './webrtc';
 import { SocialGraph, type NostrEvent as SocialGraphNostrEvent } from 'nostr-social-graph';
+import { cloneTransferableBytes } from '../transferableBytes';
 import Dexie from 'dexie';
 import { LRUCache } from './utils/lruCache';
 import { getErrorMessage } from './utils/errorMessage';
@@ -997,8 +998,8 @@ async function handleGet(id: string, hash: Uint8Array) {
   const data = await meshStore.get(hash);
 
   if (data) {
-    // Transfer the ArrayBuffer to avoid copying
-    respondWithTransfer({ type: 'result', id, data }, [data.buffer]);
+    const transferableData = cloneTransferableBytes(data);
+    respondWithTransfer({ type: 'result', id, data: transferableData }, [transferableData.buffer]);
   } else {
     respond({ type: 'result', id, data: undefined });
   }
@@ -1061,7 +1062,8 @@ async function handleReadFile(id: string, cid: import('../types').CID) {
   try {
     const data = await tree.readFile(cid);
     if (data) {
-      respondWithTransfer({ type: 'result', id, data }, [data.buffer]);
+      const transferableData = cloneTransferableBytes(data);
+      respondWithTransfer({ type: 'result', id, data: transferableData }, [transferableData.buffer]);
     } else {
       respond({ type: 'result', id, error: 'File not found' });
     }
@@ -1084,7 +1086,8 @@ async function handleReadFileRange(
   try {
     const data = await tree.readFileRange(cid, start, end);
     if (data) {
-      respondWithTransfer({ type: 'result', id, data }, [data.buffer]);
+      const transferableData = cloneTransferableBytes(data);
+      respondWithTransfer({ type: 'result', id, data: transferableData }, [transferableData.buffer]);
     } else {
       respond({ type: 'result', id, error: 'File not found' });
     }
@@ -1101,10 +1104,10 @@ async function handleReadFileStream(id: string, cid: import('../types').CID) {
 
   try {
     for await (const chunk of tree.readFileStream(cid)) {
-      // Send each chunk, transferring ownership
+      const transferableChunk = cloneTransferableBytes(chunk);
       respondWithTransfer(
-        { type: 'streamChunk', id, chunk, done: false },
-        [chunk.buffer]
+        { type: 'streamChunk', id, chunk: transferableChunk, done: false },
+        [transferableChunk.buffer]
       );
     }
     // Signal completion
