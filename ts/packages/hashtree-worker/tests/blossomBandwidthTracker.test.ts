@@ -20,7 +20,7 @@ describe('BlossomBandwidthTracker', () => {
       updates.push({ sent: stats.totalBytesSent, received: stats.totalBytesReceived });
     }, () => 1700000000123);
 
-    tracker.apply(entry({ operation: 'put', bytes: 1024, server: 'https://upload.iris.to' }));
+    tracker.apply(entry({ operation: 'put', bytes: 1024, server: 'https://upload.example' }));
     tracker.apply(entry({ operation: 'get', bytes: 2048, server: 'https://blossom.primal.net' }));
 
     const stats = tracker.getStats();
@@ -29,7 +29,7 @@ describe('BlossomBandwidthTracker', () => {
     expect(stats.updatedAt).toBe(1700000000123);
     expect(stats.servers).toEqual([
       { url: 'https://blossom.primal.net', bytesSent: 0, bytesReceived: 2048 },
-      { url: 'https://upload.iris.to', bytesSent: 1024, bytesReceived: 0 },
+      { url: 'https://upload.example', bytesSent: 1024, bytesReceived: 0 },
     ]);
     expect(updates).toEqual([
       { sent: 1024, received: 0 },

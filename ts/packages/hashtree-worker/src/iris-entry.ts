@@ -1,1 +1,0 @@
-import './iris/worker.js';

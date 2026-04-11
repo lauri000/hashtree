@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CID } from '@hashtree/core';
-import { DEFAULT_ROOT_PATH_RESOLVE_TIMEOUT_MS, parseRootPath, resolveRootPath } from '../src/iris/rootPathResolver';
+import { DEFAULT_ROOT_PATH_RESOLVE_TIMEOUT_MS, parseRootPath, resolveRootPath } from '../src/relay/rootPathResolver';
 
 const { resolveTreeRootNow } = vi.hoisted(() => ({
   resolveTreeRootNow: vi.fn(),
 }));
 
-vi.mock('../src/iris/treeRootSubscription', () => ({
+vi.mock('../src/relay/treeRootSubscription', () => ({
   resolveTreeRootNow,
 }));
 

@@ -17,7 +17,7 @@ class FakeWorker {
           totalBytesReceived: 2048,
           updatedAt: 1700000000000,
           servers: [
-            { url: 'https://upload.iris.to', bytesSent: 1024, bytesReceived: 0 },
+            { url: 'https://upload.example', bytesSent: 1024, bytesReceived: 0 },
             { url: 'https://blossom.primal.net', bytesSent: 0, bytesReceived: 2048 },
           ],
         },

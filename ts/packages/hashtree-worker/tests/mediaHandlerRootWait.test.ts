@@ -7,12 +7,12 @@ const subscribeToTreeRoots = vi.fn();
 const resolveTreeRootNow = vi.fn();
 const getHistoricalTreeRoots = vi.fn();
 
-vi.mock('../src/iris/treeRootCache', () => ({
+vi.mock('../src/relay/treeRootCache', () => ({
   getCachedRoot,
   onCachedRootUpdate,
 }));
 
-vi.mock('../src/iris/treeRootSubscription', () => ({
+vi.mock('../src/relay/treeRootSubscription', () => ({
   subscribeToTreeRoots,
   resolveTreeRootNow,
   getHistoricalTreeRoots,
@@ -50,7 +50,7 @@ describe('mediaHandler root waiting', () => {
       releaseResolve = resolve;
     }));
 
-    const { __test__ } = await import('../src/iris/mediaHandler');
+    const { __test__ } = await import('../src/relay/mediaHandler');
     const pending = __test__.waitForCachedRoot(NPUB, TREE_NAME);
 
     await Promise.resolve();
@@ -78,7 +78,7 @@ describe('mediaHandler root waiting', () => {
     });
     resolveTreeRootNow.mockResolvedValue(null);
 
-    const { __test__ } = await import('../src/iris/mediaHandler');
+    const { __test__ } = await import('../src/relay/mediaHandler');
     const pending = __test__.waitForCachedRoot(NPUB, TREE_NAME);
 
     await Promise.resolve();

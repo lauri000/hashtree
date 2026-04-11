@@ -28,7 +28,6 @@ const DEFAULT_TREE_ROOT_RELAYS = [
   'wss://relay.primal.net',
   'wss://relay.nostr.band',
   'wss://relay.snort.social',
-  'wss://temp.iris.to',
 ];
 
 // Callback to notify main thread

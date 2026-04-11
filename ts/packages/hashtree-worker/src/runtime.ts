@@ -7,6 +7,7 @@ export interface HtreeRuntimeLocationLike {
 export interface HtreeRuntimeWindowLike {
   location?: HtreeRuntimeLocationLike;
   __HTREE_SERVER_URL__?: string;
+  __HTREE_CANONICAL_URL__?: string | null;
   htree?: {
     htreeBaseUrl?: string;
   };
@@ -51,7 +52,11 @@ function getPageHostname(windowLike?: HtreeRuntimeWindowLike): string | null {
 }
 
 function hasCanonicalHtreeIdentity(windowLike?: HtreeRuntimeWindowLike): boolean {
-  const canonical = getQueryParam('iris_htree_canonical', windowLike);
+  const runtimeWindow = getWindowLike(windowLike);
+  const injectedCanonical = runtimeWindow?.__HTREE_CANONICAL_URL__;
+  const canonical = typeof injectedCanonical === 'string' && injectedCanonical.trim()
+    ? injectedCanonical.trim()
+    : getQueryParam('htree_canonical', windowLike);
   return typeof canonical === 'string' && canonical.toLowerCase().startsWith('htree://');
 }
 
@@ -92,7 +97,7 @@ export function getInjectedHtreeServerUrl(windowLike?: HtreeRuntimeWindowLike): 
   const runtimeWindow = getWindowLike(windowLike);
   if (!runtimeWindow) return null;
   const override = runtimeWindow.__HTREE_SERVER_URL__;
-  const fallback = getQueryParam('iris_htree_server', runtimeWindow);
+  const fallback = getQueryParam('htree_server', runtimeWindow);
   const candidate = typeof override === 'string' && override.trim() ? override : fallback;
   const normalized = normalizeBaseUrl(candidate);
   return normalized || null;

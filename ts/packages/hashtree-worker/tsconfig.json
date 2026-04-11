@@ -5,9 +5,9 @@
     "moduleResolution": "bundler",
     "baseUrl": ".",
     "paths": {
-      "ndk": ["./src/iris/shims.d.ts"],
-      "ndk-cache": ["./src/iris/shims.d.ts"],
-      "nostr-social-graph": ["./src/iris/shims.d.ts"]
+      "ndk": ["./src/relay/shims.d.ts"],
+      "ndk-cache": ["./src/relay/shims.d.ts"],
+      "nostr-social-graph": ["./src/relay/shims.d.ts"]
     },
     "declaration": true,
     "declarationMap": true,

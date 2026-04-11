@@ -12,7 +12,7 @@ function installWindow(serverUrl?: string, search = '', protocol = 'htree:', hos
       protocol,
       hostname,
       search,
-      origin: 'https://audio.iris.to',
+      origin: 'https://audio.example',
     },
     __HTREE_SERVER_URL__: serverUrl,
   });
@@ -38,23 +38,23 @@ describe('createHtreeRuntime', () => {
     installWindow('http://127.0.0.1:21417');
     const storage = createMemoryStorage();
     const runtime = createHtreeRuntime({
-      appId: 'iris-audio',
+      appId: 'demo-audio',
       storage,
       clientIdFactory: () => 'client-1',
       relays: ['wss://relay.example'],
-      blossomServers: [{ url: 'https://upload.iris.to', read: false, write: true }],
+      blossomServers: [{ url: 'https://upload.example', read: false, write: true }],
     });
 
     expect(runtime.getWorkerConfig({
-      storeName: 'iris-audio-worker',
+      storeName: 'demo-audio-worker',
       diagnosticsEnabled: true,
     })).toEqual({
-      storeName: 'iris-audio-worker',
+      storeName: 'demo-audio-worker',
       diagnosticsEnabled: true,
       relays: ['ws://127.0.0.1:21417/ws'],
       blossomServers: [
         { url: 'http://127.0.0.1:21417', read: true, write: true },
-        { url: 'https://upload.iris.to', read: false, write: true },
+        { url: 'https://upload.example', read: false, write: true },
       ],
     });
 
@@ -67,7 +67,7 @@ describe('createHtreeRuntime', () => {
   it('recomputes endpoints from getter functions so apps with live settings can reuse one runtime', () => {
     installWindow();
     let relays = ['wss://relay.one'];
-    let blossomServers = [{ url: 'https://upload.iris.to', read: false, write: true }];
+    let blossomServers = [{ url: 'https://upload.example', read: false, write: true }];
     const runtime = createHtreeRuntime({
       relays: () => relays,
       blossomServers: () => blossomServers,
@@ -75,11 +75,11 @@ describe('createHtreeRuntime', () => {
 
     expect(runtime.endpoints.nostrRelays).toEqual(['wss://relay.one']);
     relays = ['wss://relay.two'];
-    blossomServers = [{ url: 'https://cdn.iris.to', read: true, write: false }];
+    blossomServers = [{ url: 'https://cdn.example', read: true, write: false }];
     expect(runtime.endpoints).toEqual({
       htreeServerUrl: null,
       nostrRelays: ['wss://relay.two'],
-      blossomServers: [{ url: 'https://cdn.iris.to', read: true, write: false }],
+      blossomServers: [{ url: 'https://cdn.example', read: true, write: false }],
     });
   });
 

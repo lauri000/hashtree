@@ -8,13 +8,13 @@ const getCachedRoot = vi.fn();
 const getTreeRootCacheStore = vi.fn();
 const setCachedRoot = vi.fn();
 
-vi.mock('../src/iris/ndk', () => ({
+vi.mock('../src/relay/ndk', () => ({
   getNdk,
   subscribe: ndkSubscribe,
   unsubscribe: ndkUnsubscribe,
 }));
 
-vi.mock('../src/iris/treeRootCache', () => ({
+vi.mock('../src/relay/treeRootCache', () => ({
   getCachedRoot,
   getTreeRootCacheStore,
   setCachedRoot,
@@ -76,7 +76,7 @@ describe('tree root freshness', () => {
       },
     });
 
-    const { resolveTreeRootNow } = await import('../src/iris/treeRootSubscription');
+    const { resolveTreeRootNow } = await import('../src/relay/treeRootSubscription');
     await resolveTreeRootNow(npub, treeName, 1000);
 
     expect(fetchEvents).toHaveBeenCalledWith(
@@ -94,7 +94,7 @@ describe('tree root freshness', () => {
   it('subscribes to tree roots with relay-only cache usage', async () => {
     const pubkey = 'e'.repeat(64);
 
-    const { subscribeToTreeRoots } = await import('../src/iris/treeRootSubscription');
+    const { subscribeToTreeRoots } = await import('../src/relay/treeRootSubscription');
     subscribeToTreeRoots(pubkey);
 
     expect(ndkSubscribe).toHaveBeenCalledWith(

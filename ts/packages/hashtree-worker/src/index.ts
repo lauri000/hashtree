@@ -1,13 +1,13 @@
 export { HashtreeWorkerClient } from './client.js';
 export type { WorkerFactory, P2PFetchHandler } from './client.js';
-export { IrisWorkerClient } from './iris-client.js';
+export { RelayWorkerClient } from './relay-client.js';
 export type {
-  TreeRootInfo as IrisTreeRootInfo,
-  TreeRootUpdate as IrisTreeRootUpdate,
-  IrisWorkerConfig,
-  IrisWorkerRequest,
-  IrisWorkerResponse,
-} from './iris-client.js';
+  TreeRootInfo as RelayTreeRootInfo,
+  TreeRootUpdate as RelayTreeRootUpdate,
+  RelayWorkerConfig,
+  RelayWorkerRequest,
+  RelayWorkerResponse,
+} from './relay-client.js';
 export {
   canUseInjectedHtreeServerUrl,
   canUseSameOriginHtreeProtocolStreaming,

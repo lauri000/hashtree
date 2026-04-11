@@ -16,12 +16,12 @@ const getBlob = vi.fn();
 const readFile = vi.fn();
 const readFileRange = vi.fn();
 
-vi.mock('../src/iris/treeRootCache', () => ({
+vi.mock('../src/relay/treeRootCache', () => ({
   getCachedRoot,
   onCachedRootUpdate,
 }));
 
-vi.mock('../src/iris/treeRootSubscription', () => ({
+vi.mock('../src/relay/treeRootSubscription', () => ({
   subscribeToTreeRoots,
   resolveTreeRootNow,
 }));
@@ -56,7 +56,7 @@ describe('mediaHandler latest-only root resolution', () => {
   it('does not fall back to a historical root when the latest mutable root cannot resolve a thumbnail alias', async () => {
     listDirectory.mockResolvedValue([{ name: 'video.mp4', cid: CURRENT_ROOT, size: 123 }]);
 
-    const { __test__, initMediaHandler } = await import('../src/iris/mediaHandler');
+    const { __test__, initMediaHandler } = await import('../src/relay/mediaHandler');
     initMediaHandler(makeTree());
 
     await expect(

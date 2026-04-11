@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+## 0.2.2 - 2026-04-11
+
+Changes since the previous npm package publish.
+
+### Fixed
+
+- Repacked `@hashtree/worker` with both `dist/` and `src/` included in the npm tarball so published consumers resolve the built entrypoints and source maps correctly.
+
+## 0.2.1 - 2026-04-11
+
+Changes since the previous npm package publish.
+
+### Fixed
+
+- Included `src/` in the published `@hashtree/worker` tarball so the distributed source maps resolve correctly in consumer builds and dev servers.
+- Normalized the npm package `repository` metadata to the object form expected by the registry tooling.
+
+## 0.2.0 - 2026-04-11
+
+Changes since the previous npm package publish.
+
+### Changed
+
+- Renamed the published relay-backed worker surface from `@hashtree/worker/iris-client` and `@hashtree/worker/iris-entry` to `@hashtree/worker/relay-client` and `@hashtree/worker/relay-entry`, and renamed the exported client/types to `RelayWorkerClient`, `RelayWorkerConfig`, `RelayWorkerRequest`, and `RelayWorkerResponse`.
+- Renamed the package-internal `src/iris/*` runtime tree to neutral `src/relay/*` modules so the reusable worker package no longer carries Iris-branded source paths or symbols.
+- Switched runtime launch parameter lookup from `iris_htree_server` / `iris_htree_canonical` to generic `htree_server` / `htree_canonical`, while continuing to support host-provided `window.__HTREE_SERVER_URL__` and `window.__HTREE_CANONICAL_URL__`.
+
+### Improved
+
+- Removed the package-owned Iris Blossom defaults so consumers must provide their own upstream Blossom server policy instead of inheriting app-specific service URLs implicitly.
+- Removed `wss://temp.iris.to` from the built-in relay fallback lists used for root resolution and tree-root history lookups.
+
 ## 0.1.25 - 2026-04-11
 
 Changes since the previous npm package publish.

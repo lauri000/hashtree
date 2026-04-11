@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { registerMediaPort } from '../src/iris/mediaHandler';
+import { registerMediaPort } from '../src/relay/mediaHandler';
 
 describe('media worker port startup', () => {
   it('starts the worker-side message port after registration', () => {

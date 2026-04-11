@@ -1721,7 +1721,7 @@ function subscribeToFollowsContactLists(pubkeys: string[], depth: number): void 
     if (subscribedPubkeys.has(pk)) continue;
     if (newPubkeys.length >= remainingCapacity) break;
 
-    // Only fetch if we don't have their follow list (like iris-client does)
+    // Only fetch if we do not already have the follow list cached locally.
     try {
       const existingFollows = socialGraph.getFollowedByUser(pk);
       if (existingFollows.size > 0) {

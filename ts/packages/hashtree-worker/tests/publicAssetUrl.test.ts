@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveWorkerPublicAssetUrl } from '../src/iris/publicAssetUrl';
+import { resolveWorkerPublicAssetUrl } from '../src/relay/publicAssetUrl';
 
 describe('resolveWorkerPublicAssetUrl', () => {
   it('resolves portable relative-base assets from the app root instead of the worker chunk directory', () => {

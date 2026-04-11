@@ -36,7 +36,7 @@ export interface TreeRootInfo {
   selfEncryptedLinkKey?: string;
 }
 
-// Extended PeerStats with pool classification (iris-files specific)
+// Extended peer stats with pool classification for apps that group peers.
 export interface PeerStats {
   peerId: string;
   pubkey: string;

@@ -1,6 +1,6 @@
 {
   "name": "@hashtree/worker",
-  "version": "0.1.26",
+  "version": "0.2.2",
   "description": "Modular browser worker for hashtree blob caching, tree-root state, and Blossom connectivity",
   "type": "module",
   "main": "dist/index.js",
@@ -14,9 +14,9 @@
       "types": "./dist/client.d.ts",
       "import": "./dist/client.js"
     },
-    "./iris-client": {
-      "types": "./dist/iris-client.d.ts",
-      "import": "./dist/iris-client.js"
+    "./relay-client": {
+      "types": "./dist/relay-client.d.ts",
+      "import": "./dist/relay-client.js"
     },
     "./p2p": {
       "types": "./dist/p2p/index.d.ts",
@@ -30,9 +30,9 @@
       "types": "./dist/worker.d.ts",
       "import": "./dist/worker.js"
     },
-    "./iris-entry": {
-      "types": "./dist/iris-entry.d.ts",
-      "import": "./dist/iris-entry.js"
+    "./relay-entry": {
+      "types": "./dist/relay-entry.d.ts",
+      "import": "./dist/relay-entry.js"
     },
     "./protocol": {
       "types": "./dist/protocol.d.ts",
@@ -56,7 +56,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "src"
   ],
   "publishConfig": {
     "access": "public"
@@ -74,7 +75,10 @@
   ],
   "author": "Martti Malmi",
   "license": "MIT",
-  "repository": "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree",
+  "repository": {
+    "type": "git",
+    "url": "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree"
+  },
   "homepage": "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree/ts/packages/hashtree-worker",
   "bugs": {
     "url": "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree?tab=issues"

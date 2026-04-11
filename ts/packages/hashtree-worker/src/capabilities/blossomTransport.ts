@@ -12,12 +12,7 @@ import {
   type BlossomBandwidthUpdateHandler,
 } from './blossomBandwidthTracker.js';
 
-export const DEFAULT_BLOSSOM_SERVERS: BlossomServerConfig[] = [
-  { url: 'https://cdn.iris.to', read: true, write: false },
-  { url: 'https://hashtree.iris.to', read: true, write: false },
-  { url: 'https://blossom.primal.net', read: true, write: false },
-  { url: 'https://upload.iris.to', read: false, write: true },
-];
+export const DEFAULT_BLOSSOM_SERVERS: BlossomServerConfig[] = [];
 
 const MAX_CONCURRENT_READ_FETCHES = 12;
 

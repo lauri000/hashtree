@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 
-const ndkSource = readFileSync(new URL('../src/iris/ndk.ts', import.meta.url), 'utf8');
+const ndkSource = readFileSync(new URL('../src/relay/ndk.ts', import.meta.url), 'utf8');
 
 describe('worker NDK source', () => {
   it('does not hardcode root wasm paths', () => {

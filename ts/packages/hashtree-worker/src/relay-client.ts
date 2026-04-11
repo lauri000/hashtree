@@ -1,20 +1,20 @@
 import type { WorkerFactory } from './client.js';
 import type {
   TreeRootInfo,
-  WorkerConfig as IrisWorkerConfig,
-  WorkerRequest as IrisWorkerRequest,
-  WorkerResponse as IrisWorkerResponse,
-} from './iris/protocol.js';
+  WorkerConfig as RelayWorkerConfig,
+  WorkerRequest as RelayWorkerRequest,
+  WorkerResponse as RelayWorkerResponse,
+} from './relay/protocol.js';
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
 type PendingRequest = {
-  resolve: (message: IrisWorkerResponse) => void;
+  resolve: (message: RelayWorkerResponse) => void;
   reject: (error: Error) => void;
   timeoutId: ReturnType<typeof setTimeout>;
 };
 
-type IrisWorkerRequestPayload = IrisWorkerRequest extends infer T
+type RelayWorkerRequestPayload = RelayWorkerRequest extends infer T
   ? T extends { id: string }
     ? Omit<T, 'id'>
     : never
@@ -27,14 +27,14 @@ export interface TreeRootUpdate extends TreeRootInfo {
 
 export type {
   TreeRootInfo,
-  IrisWorkerConfig,
-  IrisWorkerRequest,
-  IrisWorkerResponse,
+  RelayWorkerConfig,
+  RelayWorkerRequest,
+  RelayWorkerResponse,
 };
 
-export class IrisWorkerClient {
+export class RelayWorkerClient {
   private readonly workerFactory: WorkerFactory;
-  private readonly config: IrisWorkerConfig;
+  private readonly config: RelayWorkerConfig;
   private worker: Worker | null = null;
   private initPromise: Promise<void> | null = null;
   private initPending:
@@ -47,7 +47,7 @@ export class IrisWorkerClient {
   private pendingRequests = new Map<string, PendingRequest>();
   private treeRootListeners = new Set<(update: TreeRootUpdate) => void>();
 
-  constructor(workerFactory: WorkerFactory, config: IrisWorkerConfig) {
+  constructor(workerFactory: WorkerFactory, config: RelayWorkerConfig) {
     this.workerFactory = workerFactory;
     this.config = config;
   }
@@ -83,7 +83,7 @@ export class IrisWorkerClient {
         type: 'init',
         id: this.nextRequestId('worker_init'),
         config: this.config,
-      } as IrisWorkerRequest);
+      } as RelayWorkerRequest);
     });
 
     return this.initPromise;
@@ -98,7 +98,7 @@ export class IrisWorkerClient {
       this.worker = new this.workerFactory();
     }
 
-    this.worker.onmessage = (event: MessageEvent<IrisWorkerResponse>) => {
+    this.worker.onmessage = (event: MessageEvent<RelayWorkerResponse>) => {
       const message = event.data;
 
       if (message.type === 'ready') {
@@ -142,7 +142,7 @@ export class IrisWorkerClient {
     return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
   }
 
-  private resolvePending(id: string, message: IrisWorkerResponse): void {
+  private resolvePending(id: string, message: RelayWorkerResponse): void {
     const pending = this.pendingRequests.get(id);
     if (!pending) return;
     clearTimeout(pending.timeoutId);
@@ -175,19 +175,19 @@ export class IrisWorkerClient {
   }
 
   private async request(
-    payload: IrisWorkerRequestPayload,
+    payload: RelayWorkerRequestPayload,
     timeoutMs = REQUEST_TIMEOUT_MS,
     transfer: Transferable[] = [],
-  ): Promise<IrisWorkerResponse> {
+  ): Promise<RelayWorkerResponse> {
     await this.init();
     if (!this.worker) {
       throw new Error('Worker not initialized');
     }
 
     const id = this.nextRequestId(payload.type);
-    const message = { ...payload, id } as IrisWorkerRequest;
+    const message = { ...payload, id } as RelayWorkerRequest;
 
-    return new Promise<IrisWorkerResponse>((resolve, reject) => {
+    return new Promise<RelayWorkerResponse>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         this.pendingRequests.delete(id);
         reject(new Error(`Worker request timed out: ${payload.type}`));
@@ -204,7 +204,7 @@ export class IrisWorkerClient {
       throw new Error('Worker not initialized');
     }
 
-    this.worker.postMessage({ type: 'registerMediaPort', port, debug } as IrisWorkerRequest, [port]);
+    this.worker.postMessage({ type: 'registerMediaPort', port, debug } as RelayWorkerRequest, [port]);
   }
 
   async getTreeRootInfo(npub: string, treeName: string): Promise<TreeRootInfo | null> {

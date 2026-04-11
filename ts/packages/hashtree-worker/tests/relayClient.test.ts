@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { WorkerRequest, WorkerResponse } from '../src/iris/protocol.js';
-import { IrisWorkerClient, type TreeRootInfo, type TreeRootUpdate } from '../src/iris-client.js';
+import type { WorkerRequest, WorkerResponse } from '../src/relay/protocol.js';
+import { RelayWorkerClient, type TreeRootInfo, type TreeRootUpdate } from '../src/relay-client.js';
 
 const ROOT_INFO: TreeRootInfo = {
   hash: Uint8Array.from({ length: 32 }, (_, index) => index + 1),
@@ -12,7 +12,7 @@ const ROOT_INFO: TreeRootInfo = {
   encryptedKey: 'ab'.repeat(32),
 };
 
-class FakeIrisWorker {
+class FakeRelayWorker {
   onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
   readonly messages: WorkerRequest[] = [];
@@ -57,10 +57,10 @@ class FakeIrisWorker {
   }
 }
 
-describe('IrisWorkerClient', () => {
-  it('returns tree root info through the iris worker protocol', async () => {
-    const client = new IrisWorkerClient(FakeIrisWorker as unknown as new () => Worker, {
-      storeName: 'iris-sites-worker',
+describe('RelayWorkerClient', () => {
+  it('returns tree root info through the relay worker protocol', async () => {
+    const client = new RelayWorkerClient(FakeRelayWorker as unknown as new () => Worker, {
+      storeName: 'demo-sites-worker',
       relays: ['wss://relay.example'],
       blossomServers: [{ url: 'https://upload.example', read: false, write: true }],
       pubkey: '11'.repeat(32),
@@ -72,8 +72,8 @@ describe('IrisWorkerClient', () => {
   });
 
   it('emits tree root updates from the worker', async () => {
-    const client = new IrisWorkerClient(FakeIrisWorker as unknown as new () => Worker, {
-      storeName: 'iris-sites-worker',
+    const client = new RelayWorkerClient(FakeRelayWorker as unknown as new () => Worker, {
+      storeName: 'demo-sites-worker',
       relays: ['wss://relay.example'],
       blossomServers: [{ url: 'https://upload.example', read: false, write: true }],
       pubkey: '11'.repeat(32),
@@ -100,13 +100,13 @@ describe('IrisWorkerClient', () => {
   });
 
   it('registers media ports without waiting for a worker response', async () => {
-    const worker = new FakeIrisWorker();
-    const client = new IrisWorkerClient((class {
+    const worker = new FakeRelayWorker();
+    const client = new RelayWorkerClient((class {
       constructor() {
         return worker;
       }
     }) as unknown as new () => Worker, {
-      storeName: 'iris-sites-worker',
+      storeName: 'demo-sites-worker',
       relays: ['wss://relay.example'],
       blossomServers: [{ url: 'https://upload.example', read: false, write: true }],
       pubkey: '11'.repeat(32),

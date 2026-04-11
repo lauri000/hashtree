@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HashTree, MemoryStore, nhashEncode, toHex, type CID, type HashTree } from '@hashtree/core';
 import { nip19 } from 'nostr-tools';
 import { storeTreeEventSnapshot } from '@hashtree/nostr';
-import { __test__, initMediaHandler, registerMediaPort } from '../src/iris/mediaHandler';
+import { __test__, initMediaHandler, registerMediaPort } from '../src/relay/mediaHandler';
 
 const ROOT: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i), key: undefined };
 const CHILD_DIR: CID = { hash: Uint8Array.from({ length: 32 }, (_, i) => i + 1), key: undefined };

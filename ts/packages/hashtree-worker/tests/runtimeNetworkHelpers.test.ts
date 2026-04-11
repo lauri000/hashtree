@@ -29,16 +29,16 @@ describe('runtime network helpers', () => {
   });
 
   it('prepends the embedded daemon blossom server and deduplicates matching entries', () => {
-    installWindow(undefined, '?iris_htree_server=http%3A%2F%2F127.0.0.1%3A21417');
+    installWindow(undefined, '?htree_server=http%3A%2F%2F127.0.0.1%3A21417');
 
     expect(resolveRuntimeEndpoints({
       blossomServers: [
         { url: 'http://127.0.0.1:21417/', read: true, write: false },
-        { url: 'https://upload.iris.to', read: false, write: true },
+        { url: 'https://upload.example', read: false, write: true },
       ],
     }).blossomServers).toEqual([
       { url: 'http://127.0.0.1:21417', read: true, write: true },
-      { url: 'https://upload.iris.to', read: false, write: true },
+      { url: 'https://upload.example', read: false, write: true },
     ]);
   });
 
@@ -59,13 +59,13 @@ describe('runtime network helpers', () => {
 
     expect(resolveRuntimeEndpoints({
       relays: ['wss://relay.example'],
-      blossomServers: [{ url: 'https://upload.iris.to', read: false, write: true }],
+      blossomServers: [{ url: 'https://upload.example', read: false, write: true }],
     })).toEqual({
       htreeServerUrl: 'http://127.0.0.1:21417',
       nostrRelays: ['ws://127.0.0.1:21417/ws'],
       blossomServers: [
         { url: 'http://127.0.0.1:21417', read: true, write: true },
-        { url: 'https://upload.iris.to', read: false, write: true },
+        { url: 'https://upload.example', read: false, write: true },
       ],
     });
   });

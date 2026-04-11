@@ -2,9 +2,9 @@ import { MemoryStore, nhashDecode, toHex } from '@hashtree/core';
 import { readTreeEventSnapshot as readStoredTreeEventSnapshot } from '@hashtree/nostr';
 import { nip19 } from 'nostr-tools';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SignedEvent } from '../src/iris/protocol';
-import { clearMemoryCache, getCachedRootInfo, initTreeRootCache } from '../src/iris/treeRootCache';
-import { handleTreeRootEvent, parseTreeRootEvent, setNotifyCallback } from '../src/iris/treeRootSubscription';
+import type { SignedEvent } from '../src/relay/protocol';
+import { clearMemoryCache, getCachedRootInfo, initTreeRootCache } from '../src/relay/treeRootCache';
+import { handleTreeRootEvent, parseTreeRootEvent, setNotifyCallback } from '../src/relay/treeRootSubscription';
 
 function buildEvent(overrides: Partial<SignedEvent>): SignedEvent {
   return {

@@ -27,7 +27,7 @@ function createWindowLike(
 
 describe('native htree runtime policy', () => {
   it('keeps same-origin routes on https pages even when a local daemon URL is injected', () => {
-    const windowLike = createWindowLike('https:', 'audio.iris.to', '', 'http://127.0.0.1:21417');
+    const windowLike = createWindowLike('https:', 'audio.example', '', 'http://127.0.0.1:21417');
 
     expect(getInjectedHtreeServerUrl(windowLike)).toBe('http://127.0.0.1:21417');
     expect(canUseInjectedHtreeServerUrl(windowLike)).toBe(false);
@@ -36,16 +36,16 @@ describe('native htree runtime policy', () => {
     expect(
       resolveRuntimeHtreeBaseUrl({
         windowLike,
-        fallbackBaseUrl: 'https://upload.iris.to',
+        fallbackBaseUrl: 'https://upload.example',
       }),
-    ).toBe('https://upload.iris.to');
+    ).toBe('https://upload.example');
   });
 
   it('uses the injected daemon URL directly inside loopback child runtimes', () => {
     const windowLike = createWindowLike(
       'http:',
       'audio.htree.localhost',
-      '?iris_htree_server=http%3A%2F%2F127.0.0.1%3A21417&iris_htree_canonical=htree%3A%2F%2Fnpub1example%2Faudio%2Findex.html',
+      '?htree_server=http%3A%2F%2F127.0.0.1%3A21417&htree_canonical=htree%3A%2F%2Fnpub1example%2Faudio%2Findex.html',
     );
 
     expect(getInjectedHtreeServerUrl(windowLike)).toBe('http://127.0.0.1:21417');
@@ -55,7 +55,7 @@ describe('native htree runtime policy', () => {
     expect(
       resolveRuntimeHtreeBaseUrl({
         windowLike,
-        fallbackBaseUrl: 'https://upload.iris.to',
+        fallbackBaseUrl: 'https://upload.example',
       }),
     ).toBe('http://127.0.0.1:21417');
   });

@@ -5,7 +5,7 @@ import {
   getCachedRootInfo,
   initTreeRootCache,
   setCachedRoot,
-} from '../src/iris/treeRootCache';
+} from '../src/relay/treeRootCache';
 
 const HASH_A = fromHex('11'.repeat(32));
 const KEY_A = fromHex('22'.repeat(32));

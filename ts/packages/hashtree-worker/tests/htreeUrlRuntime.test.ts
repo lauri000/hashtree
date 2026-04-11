@@ -39,14 +39,14 @@ describe('runtime htree urls', () => {
   });
 
   it('uses public gateway-style mutable urls when no direct runtime is available', () => {
-    const windowLike = createWindowLike('https:', 'audio.iris.to');
+    const windowLike = createWindowLike('https:', 'audio.example');
 
     expect(
       resolveHtreeRequestUrl('htree://npub1example/audio-catalog/root.json', {
         windowLike,
-        fallbackBaseUrl: 'https://upload.iris.to',
+        fallbackBaseUrl: 'https://upload.example',
       }),
-    ).toBe('https://upload.iris.to/npub1example/audio-catalog/root.json');
+    ).toBe('https://upload.example/npub1example/audio-catalog/root.json');
   });
 
   it('uses /htree mutable urls when a native child runtime can fetch directly', () => {
@@ -60,13 +60,13 @@ describe('runtime htree urls', () => {
     expect(
       resolveHtreeRequestUrl('htree://npub1example/audio-catalog/root.json', {
         windowLike,
-        fallbackBaseUrl: 'https://upload.iris.to',
+        fallbackBaseUrl: 'https://upload.example',
       }),
     ).toBe('http://127.0.0.1:21417/htree/npub1example/audio-catalog/root.json');
   });
 
   it('keeps relative /htree urls for same-origin streaming mode', () => {
-    const windowLike = createWindowLike('https:', 'audio.iris.to');
+    const windowLike = createWindowLike('https:', 'audio.example');
 
     expect(
       resolveHtreeRequestUrl('htree://nhash1example/art/cover.jpg', {

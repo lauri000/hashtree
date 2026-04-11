@@ -17,7 +17,7 @@ import { HashtreeWorkerClient } from '@hashtree/worker';
 import HashtreeWorker from './workers/hashtree.worker.ts?worker';
 
 const client = new HashtreeWorkerClient(HashtreeWorker, {
-  blossomServers: [{ url: 'https://upload.iris.to', read: true, write: true }],
+  blossomServers: [{ url: 'https://upload.example', read: true, write: true }],
 });
 await client.init();
 
@@ -26,19 +26,19 @@ const { hashHex } = await client.putBlob(data);
 const { data: blob } = await client.getBlob(hashHex);
 ```
 
-## Iris Worker Client
+## Relay Worker Client
 
-If you are using `@hashtree/worker/iris-entry?worker` and need Iris-specific tree-root
-metadata or subscription calls, use the dedicated Iris wrapper:
+If you are using `@hashtree/worker/relay-entry?worker` and need relay-backed tree-root
+metadata or subscription calls, use the dedicated relay wrapper:
 
 ```typescript
-import { IrisWorkerClient } from '@hashtree/worker/iris-client';
-import HashtreeWorker from '@hashtree/worker/iris-entry?worker';
+import { RelayWorkerClient } from '@hashtree/worker/relay-client';
+import HashtreeWorker from '@hashtree/worker/relay-entry?worker';
 
-const client = new IrisWorkerClient(HashtreeWorker, {
-  storeName: 'iris-sites-worker',
+const client = new RelayWorkerClient(HashtreeWorker, {
+  storeName: 'demo-sites-worker',
   relays: ['wss://relay.damus.io'],
-  blossomServers: [{ url: 'https://upload.iris.to', read: false, write: true }],
+  blossomServers: [{ url: 'https://upload.example', read: false, write: true }],
   pubkey: '336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b',
 });
 
@@ -49,10 +49,10 @@ const stop = client.onTreeRootUpdate((update) => {
 });
 ```
 
-## Iris-Compatible Runtime Defaults
+## Browser Runtime Defaults
 
 When the app runs inside Iris or another shell that injects `window.__HTREE_SERVER_URL__`
-(or the launch URL carries `iris_htree_server`), the main app-facing API should be
+(or the launch URL carries `htree_server`), the main app-facing API should be
 `createHtreeRuntime(...)`:
 
 ```typescript
@@ -68,8 +68,8 @@ const DEFAULT_RELAYS = [
 ];
 
 const DEFAULT_BLOSSOM_SERVERS = [
-  { url: 'https://upload.iris.to', read: false, write: true },
-  { url: 'https://cdn.iris.to', read: true, write: false },
+  { url: 'https://upload.example', read: false, write: true },
+  { url: 'https://cdn.example', read: true, write: false },
 ];
 
 const runtime = createHtreeRuntime({
@@ -118,7 +118,7 @@ channel.
 Behavior:
 
 - In plain web mode, `runtime.endpoints` keeps your configured public relays and Blossom servers.
-- In Iris/native child runtimes, `runtime.endpoints` and `runtime.getWorkerConfig()` switch transport defaults to the local daemon endpoints.
+- In native child runtimes, `runtime.endpoints` and `runtime.getWorkerConfig()` switch transport defaults to the local daemon endpoints.
 - `runtime.urls.media(...)` handles `/htree/...` URL generation plus the per-client `htree_c` and optional `htree_t` query params.
 - `runtime.media.ensureReady(...)` handles the common page-side service-worker/media-port handshake.
 
@@ -130,12 +130,12 @@ If your service worker intercepts `/htree/...` media requests and forwards them 
 - `runtime.urls.media(..., { clientScoped: true })` appends it as the `htree_c` query param.
 - `runtime.media.ensureReady(...)` sends the same key in `REGISTER_WORKER_PORT` and `PING_WORKER_PORT`.
 
-That lets the service worker map fetches back to the correct worker port when multiple tabs or isolated Iris child webviews are active at once, without falling back to a single global port.
+That lets the service worker map fetches back to the correct worker port when multiple tabs or isolated child webviews are active at once, without falling back to a single global port.
 
 ## Exports
 
 - `@hashtree/worker` — `createHtreeRuntime`, `resolveRuntimeEndpoints`, and `HashtreeWorkerClient`
-- `@hashtree/worker/iris-client` — `IrisWorkerClient` plus Iris-specific tree-root metadata types
+- `@hashtree/worker/relay-client` — `RelayWorkerClient` plus relay-backed tree-root metadata types
 - `@hashtree/worker/worker` — `attachHashtreeWorker(...)` for embedding the worker protocol into a custom worker
 - `@hashtree/worker/p2p` — `WebRTCController` / `WebRTCProxy` for P2P data channel management
 - `@hashtree/worker/entry` — Worker entry point
