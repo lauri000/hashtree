@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.1.24 - 2026-04-11
+
+Changes since the previous npm package publish.
+
+### Added
+
+- Added `@hashtree/worker/worker` with `attachHashtreeWorker(...)` so apps can embed the hashtree worker protocol inside a custom worker or a dedicated `MessagePort` instead of being forced to use the package-owned worker entrypoint.
+
+### Changed
+
+- Changed the default `@hashtree/worker/entry` bootstrap to use the same attachable worker adapter as custom embedded workers.
+
 ## 0.1.23 - 2026-04-11
 
 Changes since the previous npm package publish.
