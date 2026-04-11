@@ -35,6 +35,12 @@ function createForwardingController(
   localStore: Store,
   options: {
     upstreamFetch?: (hash: Uint8Array) => Promise<Uint8Array | null>;
+    requestDispatch?: {
+      initialFanout: number;
+      hedgeFanout: number;
+      maxFanout: number;
+      hedgeIntervalMs: number;
+    };
   } = {},
 ): {
   controller: WebRTCController;
@@ -53,6 +59,7 @@ function createForwardingController(
     sendSignaling: async () => {},
     requestTimeout: 100,
     upstreamFetch: options.upstreamFetch,
+    requestDispatch: options.requestDispatch,
   });
 
   const internal = controller as unknown as ControllerPrivateApi;
@@ -253,5 +260,49 @@ describe('WebRTCController forwarding behavior', () => {
 
     expect(countResponseMessages(sentData, requesterA.peerId)).toBe(1);
     expect(countResponseMessages(sentData, requesterB.peerId)).toBe(1);
+  });
+
+  it('uses the same staged peer scheduler for forwarded requests instead of flooding every peer', async () => {
+    vi.useFakeTimers();
+    const localStore: Store = {
+      put: async () => true,
+      get: async () => null,
+      has: async () => false,
+      delete: async () => false,
+    };
+    const { internal, sentData } = createForwardingController(localStore, {
+      requestDispatch: {
+        initialFanout: 1,
+        hedgeFanout: 1,
+        maxFanout: 2,
+        hedgeIntervalMs: 100,
+      },
+    });
+    const requesterA = connectPeer(internal, 'peer-requester-a', 'requester-a-pubkey');
+    const requesterB = connectPeer(internal, 'peer-requester-b', 'requester-b-pubkey');
+    connectPeer(internal, 'peer-upstream-a', 'upstream-a-pubkey');
+    connectPeer(internal, 'peer-upstream-b', 'upstream-b-pubkey');
+
+    const hashA = await sha256(new TextEncoder().encode('forward-a'));
+    const hashB = await sha256(new TextEncoder().encode('forward-b'));
+
+    await internal.onDataChannelMessage(
+      requesterA.peerId,
+      new Uint8Array(encodeRequest(createRequest(hashA, 4))),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sentData).toHaveLength(1);
+    const firstForwardPeer = sentData[0]?.peerId;
+    expect(firstForwardPeer).toBeDefined();
+
+    await internal.onDataChannelMessage(
+      requesterB.peerId,
+      new Uint8Array(encodeRequest(createRequest(hashB, 4))),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sentData).toHaveLength(2);
+    expect(sentData[1]?.peerId).not.toBe(firstForwardPeer);
   });
 });

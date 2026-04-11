@@ -318,11 +318,7 @@ pub struct Simulation {
 
 impl Simulation {
     fn virtual_sleep_divisor(&self) -> u64 {
-        self.config
-            .retrieval_poll_interval_ms
-            .max(1)
-            .saturating_mul(10)
-            .max(1)
+        self.config.retrieval_poll_interval_ms.max(1)
     }
 
     fn virtual_scaled_latency_ms(&self) -> u64 {
@@ -515,14 +511,14 @@ impl Simulation {
         // Create transport connected to shared relay
         let transport = Arc::new(self.relay.create_transport(node_id.clone()));
 
-        // In virtual timing mode we still sleep, but with scaled-down latency so ordering
-        // effects remain while wall-clock runtime stays fast.
+        // Virtual timing should avoid wall-clock link sleeps. Ordering still comes from
+        // the stepped processing loop and retrieval poll cadence.
         let (latency_ms, latency_mode) = match self.config.retrieval_timing_mode {
             RetrievalTimingMode::WallClock => {
                 (self.config.network_latency_ms, MockLatencyMode::RealSleep)
             }
             RetrievalTimingMode::VirtualSteps => {
-                (self.virtual_scaled_latency_ms(), MockLatencyMode::RealSleep)
+                (self.virtual_scaled_latency_ms(), MockLatencyMode::YieldOnly)
             }
         };
         let conn_factory = Arc::new(MockConnectionFactory::new_with_latency_mode(

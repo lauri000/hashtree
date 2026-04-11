@@ -113,6 +113,7 @@ export type WorkerRequest =
 
   // WebRTC pool configuration
   | { type: 'setWebRTCPools'; id: string; pools: { follows: { max: number; satisfied: number }; other: { max: number; satisfied: number } } }
+  | { type: 'setWebRTCForwardRateLimit'; id: string; forwardRateLimit?: ForwardRateLimitConfig }
   | { type: 'sendWebRTCHello'; id: string }
   | { type: 'setFollows'; id: string; follows: string[] }
 
@@ -160,12 +161,18 @@ export interface BlossomServerConfig {
   write?: boolean; // Whether to write to this server
 }
 
+export interface ForwardRateLimitConfig {
+  maxForwardsPerPeerWindow?: number;
+  windowMs?: number;
+}
+
 export interface WorkerConfig {
   relays: string[];
   blossomServers?: BlossomServerConfig[];  // Blossom servers with read/write config
   pubkey: string;  // User's pubkey (required - user always logged in)
   nsec?: string;  // Hex-encoded secret key (only for nsec login, not extension)
   storeName?: string;  // IndexedDB database name, defaults to 'hashtree-worker'
+  forwardRateLimit?: ForwardRateLimitConfig;
 }
 
 // ============================================================================

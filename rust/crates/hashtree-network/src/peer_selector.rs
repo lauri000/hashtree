@@ -119,6 +119,22 @@ fn sanitize_latency(value: f64) -> f64 {
     }
 }
 
+fn compute_backoff_ms(level: u32) -> u64 {
+    if level == 0 {
+        return 0;
+    }
+
+    let mut backoff_ms = INITIAL_BACKOFF_MS;
+    for _ in 1..level {
+        backoff_ms = backoff_ms.saturating_mul(BACKOFF_MULTIPLIER);
+        if backoff_ms >= MAX_BACKOFF_MS {
+            return MAX_BACKOFF_MS;
+        }
+    }
+
+    backoff_ms.min(MAX_BACKOFF_MS)
+}
+
 fn clamp_rto(rto_ms: u64) -> u64 {
     if rto_ms == 0 {
         INITIAL_RTO_MS
@@ -331,8 +347,7 @@ impl PeerStats {
     /// Apply exponential backoff
     fn apply_backoff(&mut self) {
         self.backoff_level += 1;
-        let backoff_ms = (INITIAL_BACKOFF_MS * BACKOFF_MULTIPLIER.pow(self.backoff_level - 1))
-            .min(MAX_BACKOFF_MS);
+        let backoff_ms = compute_backoff_ms(self.backoff_level);
         self.backed_off_until = Some(Instant::now() + Duration::from_millis(backoff_ms));
     }
 
@@ -590,6 +605,13 @@ impl PeerSelector {
     /// Get all peer stats
     pub fn all_stats(&self) -> impl Iterator<Item = &PeerStats> {
         self.stats.values()
+    }
+
+    /// Whether this peer is currently backed off due to recent failures/timeouts.
+    pub fn is_peer_backed_off(&self, peer_id: &str) -> bool {
+        self.stats
+            .get(peer_id)
+            .is_some_and(PeerStats::is_backed_off)
     }
 
     /// Record a request being sent to a peer
@@ -1006,6 +1028,18 @@ mod tests {
         stats.record_success(50, 1024);
         assert!(!stats.is_backed_off());
         assert_eq!(stats.backoff_level, 0);
+    }
+
+    #[test]
+    fn test_peer_stats_backoff_saturates_without_overflow() {
+        let mut stats = PeerStats::new("peer1");
+
+        for _ in 0..128 {
+            stats.record_failure();
+        }
+
+        assert_eq!(compute_backoff_ms(stats.backoff_level), MAX_BACKOFF_MS);
+        assert!(stats.is_backed_off());
     }
 
     #[test]

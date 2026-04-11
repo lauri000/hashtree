@@ -45,6 +45,10 @@ struct PendingQuoteRequest {
     offered_payment_sat: u64,
 }
 
+struct PendingForwardRequest {
+    requester_ids: HashSet<String>,
+}
+
 #[async_trait]
 pub trait MeshReadSource: Send + Sync {
     fn id(&self) -> &str;
@@ -114,6 +118,7 @@ const INITIAL_SOURCE_BACKOFF_MS: u64 = 250;
 const MAX_SOURCE_BACKOFF_MS: u64 = 10_000;
 const SOURCE_SCORE_TIE_DELTA: f64 = 0.15;
 const RECENT_SOURCE_SUCCESS_WINDOW: Duration = Duration::from_secs(60);
+const ACTIVE_PEER_REQUEST_RANK_PENALTY: usize = 3;
 
 fn source_reliability_score(stats: &AdaptiveSourceStats) -> f64 {
     (stats.successes as f64 + 1.0) / (stats.requests as f64 + 2.0)
@@ -176,6 +181,21 @@ impl ReadRoute {
         match self {
             Self::Peers(_) => "peers",
             Self::Sources => "sources",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct MeshReadContext {
+    exclude_peer_id: Option<String>,
+    request_htl: u8,
+}
+
+impl Default for MeshReadContext {
+    fn default() -> Self {
+        Self {
+            exclude_peer_id: None,
+            request_htl: MAX_HTL,
         }
     }
 }
@@ -463,6 +483,8 @@ where
     pending_requests: RwLock<HashMap<String, PendingRequest>>,
     /// Pending quote negotiations keyed by requested hash.
     pending_quotes: RwLock<HashMap<String, PendingQuoteRequest>>,
+    /// Forwarded peer requests currently being resolved through the mesh/upstream.
+    pending_forward_requests: RwLock<HashMap<String, PendingForwardRequest>>,
     /// Quotes we issued to peers and will accept exactly once until expiry.
     issued_quotes: RwLock<HashMap<(String, String, u64), IssuedQuote>>,
     /// Monotonic quote identifier generator.
@@ -477,6 +499,8 @@ where
     read_route_stats: RwLock<HashMap<String, AdaptiveSourceStats>>,
     /// Adaptive selector for peer ordering.
     peer_selector: RwLock<PeerSelector>,
+    /// Active per-peer in-flight reads so concurrent block fetches spread across peers.
+    peer_active_requests: RwLock<HashMap<String, usize>>,
     /// Routing/dispatch configuration.
     routing: MeshRoutingConfig,
     /// Request timeout
@@ -526,6 +550,7 @@ where
             htl_configs: RwLock::new(HashMap::new()),
             pending_requests: RwLock::new(HashMap::new()),
             pending_quotes: RwLock::new(HashMap::new()),
+            pending_forward_requests: RwLock::new(HashMap::new()),
             issued_quotes: RwLock::new(HashMap::new()),
             next_quote_id: RwLock::new(1),
             read_sources: RwLock::new(HashMap::new()),
@@ -533,6 +558,7 @@ where
             inflight_source_fetches: Mutex::new(HashMap::new()),
             read_route_stats: RwLock::new(HashMap::new()),
             peer_selector: RwLock::new(selector),
+            peer_active_requests: RwLock::new(HashMap::new()),
             routing,
             request_timeout,
             debug,
@@ -626,22 +652,84 @@ where
         self.deterministic_actor_draw(hash, 0xC0_C0_C0_C0_C0_C0_C0_C0) < p
     }
 
-    async fn ordered_connected_peers(&self) -> Vec<String> {
+    async fn ordered_connected_peers(&self, exclude_peer_id: Option<&str>) -> Vec<String> {
         let current_peer_ids = self.signaling.peer_ids().await;
         if current_peer_ids.is_empty() {
             return Vec::new();
         }
 
         sync_selector_peers(&self.peer_selector, &current_peer_ids).await;
-        let current_set: HashSet<&str> = current_peer_ids.iter().map(String::as_str).collect();
-        let mut ordered_peer_ids = self.peer_selector.write().await.select_peers();
-        ordered_peer_ids.retain(|peer_id| current_set.contains(peer_id.as_str()));
-        if ordered_peer_ids.is_empty() {
-            let mut fallback = current_peer_ids;
+        let mut candidate_peer_ids: Vec<String> = current_peer_ids
+            .into_iter()
+            .filter(|peer_id| exclude_peer_id.is_none_or(|exclude| peer_id != exclude))
+            .collect();
+        if candidate_peer_ids.is_empty() {
+            return Vec::new();
+        }
+
+        let current_set: HashSet<&str> = candidate_peer_ids.iter().map(String::as_str).collect();
+        let mut selector = self.peer_selector.write().await;
+        let mut selector_order = selector.select_peers();
+        selector_order.retain(|peer_id| current_set.contains(peer_id.as_str()));
+        if selector_order.is_empty() {
+            let mut fallback = candidate_peer_ids;
             fallback.sort();
             return fallback;
         }
-        ordered_peer_ids
+        let backed_off: HashMap<String, bool> = candidate_peer_ids
+            .iter()
+            .map(|peer_id| (peer_id.clone(), selector.is_peer_backed_off(peer_id)))
+            .collect();
+        drop(selector);
+
+        let rank: HashMap<&str, usize> = selector_order
+            .iter()
+            .enumerate()
+            .map(|(idx, peer_id)| (peer_id.as_str(), idx))
+            .collect();
+        let active = self.peer_active_requests.read().await;
+        candidate_peer_ids.sort_by(|left, right| {
+            let left_backed_off = backed_off.get(left).copied().unwrap_or(false);
+            let right_backed_off = backed_off.get(right).copied().unwrap_or(false);
+            if left_backed_off != right_backed_off {
+                return if left_backed_off {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Less
+                };
+            }
+            let left_rank = rank.get(left.as_str()).copied().unwrap_or(usize::MAX / 2);
+            let right_rank = rank.get(right.as_str()).copied().unwrap_or(usize::MAX / 2);
+            let left_load = active.get(left).copied().unwrap_or(0);
+            let right_load = active.get(right).copied().unwrap_or(0);
+            (left_rank + left_load.saturating_mul(ACTIVE_PEER_REQUEST_RANK_PENALTY))
+                .cmp(&(right_rank + right_load.saturating_mul(ACTIVE_PEER_REQUEST_RANK_PENALTY)))
+                .then_with(|| left.cmp(right))
+        });
+        candidate_peer_ids
+    }
+
+    async fn reserve_peer_request(&self, peer_id: &str) {
+        let mut active = self.peer_active_requests.write().await;
+        *active.entry(peer_id.to_string()).or_insert(0) += 1;
+    }
+
+    async fn release_peer_request(&self, peer_id: &str) {
+        let mut active = self.peer_active_requests.write().await;
+        let Some(count) = active.get_mut(peer_id) else {
+            return;
+        };
+        if *count <= 1 {
+            active.remove(peer_id);
+        } else {
+            *count -= 1;
+        }
+    }
+
+    async fn release_queried_peer_requests(&self, peer_ids: &[String]) {
+        for peer_id in peer_ids {
+            self.release_peer_request(peer_id).await;
+        }
     }
 
     fn requested_quote_mint(&self) -> Option<&str> {
@@ -806,6 +894,7 @@ where
         &self,
         peer_id: &str,
         hash: &Hash,
+        request_htl: u8,
         quote_id: Option<u64>,
     ) -> bool {
         let channel = match self.signaling.get_channel(peer_id).await {
@@ -821,7 +910,7 @@ where
                 .unwrap_or_else(PeerHTLConfig::random)
         };
 
-        let send_htl = htl_config.decrement(MAX_HTL);
+        let send_htl = htl_config.decrement(request_htl);
         let req = match quote_id {
             Some(quote_id) => create_request_with_quote(hash, send_htl, quote_id),
             None => create_request(hash, send_htl),
@@ -1085,7 +1174,7 @@ where
     ///
     /// This keeps the message pump logic shared between simulation and the
     /// default production wrapper instead of duplicating per-channel loops.
-    pub async fn drain_available_data_messages(&self) -> DataPumpStats {
+    pub async fn drain_available_data_messages(self: &Arc<Self>) -> DataPumpStats {
         let mut stats = DataPumpStats::default();
         let peer_ids = self.signaling.peer_ids().await;
         for peer_id in peer_ids {
@@ -1230,7 +1319,7 @@ where
         payment_sat: u64,
         quote_ttl: Duration,
     ) -> Option<Vec<u8>> {
-        let ordered_peer_ids = self.ordered_connected_peers().await;
+        let ordered_peer_ids = self.ordered_connected_peers(None).await;
         if ordered_peer_ids.is_empty() {
             return None;
         }
@@ -1240,7 +1329,7 @@ where
             .await
         {
             if let Some(data) = self
-                .request_from_single_peer(hash, &quote.peer_id, Some(quote.quote_id))
+                .request_from_single_peer(hash, &quote.peer_id, MAX_HTL, Some(quote.quote_id))
                 .await
             {
                 return Some(data);
@@ -1326,6 +1415,7 @@ where
         &self,
         hash: &Hash,
         peer_id: &str,
+        request_htl: u8,
         quote_id: Option<u64>,
     ) -> Option<Vec<u8>> {
         let hash_key = hash_to_key(hash);
@@ -1340,10 +1430,14 @@ where
         );
 
         let mut rx = rx;
-        if !self.send_request_to_peer(peer_id, hash, quote_id).await {
+        if !self
+            .send_request_to_peer(peer_id, hash, request_htl, quote_id)
+            .await
+        {
             let _ = self.pending_requests.write().await.remove(&hash_key);
             return None;
         }
+        self.reserve_peer_request(peer_id).await;
 
         if let Ok(Ok(Some(data))) = tokio::time::timeout(self.request_timeout, &mut rx).await {
             if hashtree_core::sha256(&data) == *hash {
@@ -1353,10 +1447,13 @@ where
         }
 
         if let Some(pending) = self.pending_requests.write().await.remove(&hash_key) {
+            self.release_queried_peer_requests(&pending.queried_peers)
+                .await;
             for peer_id in pending.queried_peers {
                 self.peer_selector.write().await.record_timeout(&peer_id);
             }
         }
+        let _ = self.take_forward_requesters(&hash_key).await;
         None
     }
 
@@ -1364,6 +1461,7 @@ where
         &self,
         hash: &Hash,
         ordered_peer_ids: &[String],
+        request_htl: u8,
     ) -> Option<Vec<u8>> {
         let hash_key = hash_to_key(hash);
         let (tx, rx) = oneshot::channel();
@@ -1388,8 +1486,12 @@ where
                 async move {
                     let mut sent = 0usize;
                     for peer_id in wave_peer_ids {
-                        if self.send_request_to_peer(&peer_id, &hash, None).await {
+                        if self
+                            .send_request_to_peer(&peer_id, &hash, request_htl, None)
+                            .await
+                        {
                             sent += 1;
+                            self.reserve_peer_request(&peer_id).await;
                             if let Some(pending) =
                                 self.pending_requests.write().await.get_mut(&hash_key)
                             {
@@ -1419,10 +1521,13 @@ where
 
         let Some(data) = result else {
             if let Some(pending) = self.pending_requests.write().await.remove(&hash_key) {
+                self.release_queried_peer_requests(&pending.queried_peers)
+                    .await;
                 for peer_id in pending.queried_peers {
                     self.peer_selector.write().await.record_timeout(&peer_id);
                 }
             }
+            let _ = self.take_forward_requesters(&hash_key).await;
             return None;
         };
 
@@ -1572,9 +1677,11 @@ where
         result.map(|hit| hit.data)
     }
 
-    async fn available_read_routes(&self) -> Vec<ReadRoute> {
+    async fn available_read_routes(&self, context: &MeshReadContext) -> Vec<ReadRoute> {
         let mut routes = Vec::new();
-        let ordered_peers = self.ordered_connected_peers().await;
+        let ordered_peers = self
+            .ordered_connected_peers(context.exclude_peer_id.as_deref())
+            .await;
         if !ordered_peers.is_empty() {
             routes.push(ReadRoute::Peers(ordered_peers));
         }
@@ -1613,12 +1720,20 @@ where
             < SOURCE_SCORE_TIE_DELTA
     }
 
-    async fn run_read_route(&self, hash: &Hash, route: &ReadRoute) -> Option<Vec<u8>> {
+    async fn run_read_route(
+        &self,
+        hash: &Hash,
+        route: &ReadRoute,
+        context: &MeshReadContext,
+    ) -> Option<Vec<u8>> {
         let route_id = route.id();
         self.record_route_request(route_id).await;
         let started_at = Instant::now();
         let result = match route {
-            ReadRoute::Peers(peer_ids) => self.request_from_ordered_peers(hash, peer_ids).await,
+            ReadRoute::Peers(peer_ids) => {
+                self.request_from_ordered_peers(hash, peer_ids, context.request_htl)
+                    .await
+            }
             ReadRoute::Sources => self.request_from_read_sources(hash).await,
         };
         if result.is_some() {
@@ -1630,15 +1745,19 @@ where
         result
     }
 
-    async fn request_from_mesh(&self, hash: &Hash) -> Option<Vec<u8>> {
-        let routes = self.available_read_routes().await;
+    async fn request_from_mesh_with_context(
+        &self,
+        hash: &Hash,
+        context: &MeshReadContext,
+    ) -> Option<Vec<u8>> {
+        let routes = self.available_read_routes(context).await;
         match routes.as_slice() {
             [] => None,
-            [route] => self.run_read_route(hash, route).await,
+            [route] => self.run_read_route(hash, route, context).await,
             [first, second, ..] => {
                 if self.should_probe_multiple_routes(&routes).await {
-                    let first_fut = self.run_read_route(hash, first);
-                    let second_fut = self.run_read_route(hash, second);
+                    let first_fut = self.run_read_route(hash, first, context);
+                    let second_fut = self.run_read_route(hash, second, context);
                     tokio::pin!(first_fut);
                     tokio::pin!(second_fut);
                     let mut first_done = false;
@@ -1665,24 +1784,75 @@ where
                     }
                     None
                 } else {
-                    if let Some(data) = self.run_read_route(hash, first).await {
+                    if let Some(data) = self.run_read_route(hash, first, context).await {
                         return Some(data);
                     }
-                    self.run_read_route(hash, second).await
+                    self.run_read_route(hash, second, context).await
                 }
             }
         }
     }
 
-    async fn complete_pending_response(&self, from_peer: &str, hash_key: String, payload: Vec<u8>) {
+    async fn request_from_mesh(&self, hash: &Hash) -> Option<Vec<u8>> {
+        self.request_from_mesh_with_context(hash, &MeshReadContext::default())
+            .await
+    }
+
+    async fn begin_forward_request(&self, hash_key: &str, requester_id: &str) -> bool {
+        let mut pending = self.pending_forward_requests.write().await;
+        if let Some(existing) = pending.get_mut(hash_key) {
+            existing.requester_ids.insert(requester_id.to_string());
+            return false;
+        }
+
+        let mut requester_ids = HashSet::new();
+        requester_ids.insert(requester_id.to_string());
+        pending.insert(
+            hash_key.to_string(),
+            PendingForwardRequest { requester_ids },
+        );
+        true
+    }
+
+    async fn take_forward_requesters(&self, hash_key: &str) -> Vec<String> {
+        self.pending_forward_requests
+            .write()
+            .await
+            .remove(hash_key)
+            .map(|pending| pending.requester_ids.into_iter().collect())
+            .unwrap_or_default()
+    }
+
+    async fn complete_pending_response(
+        &self,
+        from_peer: &str,
+        hash: &Hash,
+        hash_key: String,
+        payload: Vec<u8>,
+    ) {
         if let Some(pending) = self.pending_requests.write().await.remove(&hash_key) {
+            self.release_queried_peer_requests(&pending.queried_peers)
+                .await;
             let rtt_ms = pending.started_at.elapsed().as_millis() as u64;
             self.peer_selector.write().await.record_success(
                 from_peer,
                 rtt_ms,
                 payload.len() as u64,
             );
+            let forward_requesters = self.take_forward_requesters(&hash_key).await;
+            let response_bytes = if forward_requesters.is_empty() {
+                None
+            } else {
+                Some(encode_response(&create_response(hash, payload.clone())))
+            };
             let _ = pending.response_tx.send(Some(payload));
+            if let Some(response_bytes) = response_bytes {
+                for requester_id in forward_requesters {
+                    if let Some(channel) = self.signaling.get_channel(&requester_id).await {
+                        let _ = channel.send(response_bytes.clone()).await;
+                    }
+                }
+            }
         }
     }
 
@@ -1743,7 +1913,7 @@ where
             return;
         }
 
-        self.complete_pending_response(from_peer, hash_key, res.d)
+        self.complete_pending_response(from_peer, &hash, hash_key, res.d)
             .await;
     }
 
@@ -1786,7 +1956,11 @@ where
         }
     }
 
-    async fn handle_request_message(&self, from_peer: &str, req: crate::protocol::DataRequest) {
+    async fn handle_request_message(
+        self: &Arc<Self>,
+        from_peer: &str,
+        req: crate::protocol::DataRequest,
+    ) {
         let hash = match crate::protocol::bytes_to_hash(&req.h) {
             Some(h) => h,
             None => return,
@@ -1852,17 +2026,38 @@ where
             return;
         }
 
-        if let Some(data) = self.request_from_read_sources(&hash).await {
-            let res = create_response(&hash, data);
-            let response_bytes = encode_response(&res);
-            if let Some(channel) = self.signaling.get_channel(from_peer).await {
-                let _ = channel.send(response_bytes).await;
-            }
+        if self.pending_requests.read().await.contains_key(&hash_key) {
+            let _ = self.begin_forward_request(&hash_key, from_peer).await;
+            return;
         }
+
+        if !self.begin_forward_request(&hash_key, from_peer).await {
+            return;
+        }
+
+        let from_peer = from_peer.to_string();
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            let context = MeshReadContext {
+                exclude_peer_id: Some(from_peer.clone()),
+                request_htl: req.htl,
+            };
+            let result = this.request_from_mesh_with_context(&hash, &context).await;
+            let requester_ids = this.take_forward_requesters(&hash_key).await;
+            if let Some(data) = result {
+                let res = create_response(&hash, data);
+                let response_bytes = encode_response(&res);
+                for requester_id in requester_ids {
+                    if let Some(channel) = this.signaling.get_channel(&requester_id).await {
+                        let _ = channel.send(response_bytes.clone()).await;
+                    }
+                }
+            }
+        });
     }
 
     /// Handle incoming data message
-    pub async fn handle_data_message(&self, from_peer: &str, data: &[u8]) {
+    pub async fn handle_data_message(self: &Arc<Self>, from_peer: &str, data: &[u8]) {
         let parsed = match parse_message(data) {
             Some(m) => m,
             None => return,

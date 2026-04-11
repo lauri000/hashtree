@@ -214,6 +214,55 @@ async fn run_two_gets_with_pumps(
     }
 }
 
+async fn run_forwarded_request_with_pumps(
+    requester: &TestNode,
+    gateway_peer_id: &str,
+    hash: Hash,
+    nodes: &[&TestNode],
+) -> Option<Vec<u8>> {
+    let hash_key = hash_to_key(&hash);
+    let (tx, mut rx) = oneshot::channel();
+    requester.store.pending_requests.write().await.insert(
+        hash_key,
+        PendingRequest {
+            response_tx: tx,
+            started_at: Instant::now(),
+            queried_peers: vec![gateway_peer_id.to_string()],
+        },
+    );
+
+    let channel = requester
+        .store
+        .signaling()
+        .get_channel(gateway_peer_id)
+        .await
+        .expect("gateway channel");
+    let request = create_request(&hash, MAX_HTL);
+    channel
+        .send(encode_request(&request))
+        .await
+        .expect("send forwarded request");
+
+    let started = Instant::now();
+    loop {
+        if let Ok(Some(data)) = rx.try_recv() {
+            return Some(data);
+        }
+
+        if started.elapsed() > Duration::from_secs(1) {
+            requester
+                .store
+                .pending_requests
+                .write()
+                .await
+                .remove(&hash_to_key(&hash));
+            return None;
+        }
+
+        pump_test_network(nodes, 4).await;
+    }
+}
+
 async fn run_bad_peer_series(strategy: SelectionStrategy) -> usize {
     let _guard = mock_network_lock().lock().await;
     crate::mock::clear_channel_registry().await;
@@ -749,6 +798,45 @@ async fn test_tit_for_tat_store_path_recovers_after_bad_peer_observation() {
 }
 
 #[tokio::test]
+async fn test_ordered_connected_peers_treats_active_load_as_temporary() {
+    let _guard = mock_network_lock().lock().await;
+    crate::mock::clear_channel_registry().await;
+
+    let relay = crate::mock::MockRelay::new();
+    let requester =
+        make_shared_test_node(relay.clone(), "a-requester", MeshRoutingConfig::default());
+    let peer_a = make_shared_test_node(relay.clone(), "b-peer", MeshRoutingConfig::default());
+    let peer_b = make_shared_test_node(relay, "c-peer", MeshRoutingConfig::default());
+    let nodes = [&requester, &peer_a, &peer_b];
+
+    for node in &nodes {
+        node.transport.connect(&[]).await.expect("connect");
+        node.store.start().await.expect("start");
+    }
+    pump_test_network(&nodes, 24).await;
+
+    {
+        let mut selector = requester.store.peer_selector.write().await;
+        selector.add_peer("b-peer");
+        selector.add_peer("c-peer");
+        selector.record_success("b-peer", 15, 1024);
+    }
+
+    let ordered_idle = requester.store.ordered_connected_peers(None).await;
+    assert_eq!(ordered_idle.first().map(String::as_str), Some("b-peer"));
+
+    requester.store.reserve_peer_request("b-peer").await;
+    let ordered_busy = requester.store.ordered_connected_peers(None).await;
+    assert_eq!(ordered_busy.first().map(String::as_str), Some("c-peer"));
+
+    requester.store.release_peer_request("b-peer").await;
+    let ordered_released = requester.store.ordered_connected_peers(None).await;
+    assert_eq!(ordered_released.first().map(String::as_str), Some("b-peer"));
+
+    crate::mock::clear_channel_registry().await;
+}
+
+#[tokio::test]
 async fn test_read_sources_prefer_previously_successful_source() {
     let local_store = Arc::new(MemoryStore::new());
     let store = make_test_store_with_routing(
@@ -868,6 +956,38 @@ async fn test_forwarded_request_can_be_served_from_read_source() {
             .expect("gateway local lookup"),
         Some(payload),
     );
+
+    crate::mock::clear_channel_registry().await;
+}
+
+#[tokio::test]
+async fn test_forwarded_request_can_be_served_from_another_peer() {
+    let _guard = mock_network_lock().lock().await;
+    crate::mock::clear_channel_registry().await;
+
+    let relay = crate::mock::MockRelay::new();
+    let requester =
+        make_shared_test_node(relay.clone(), "a-requester", MeshRoutingConfig::default());
+    let gateway = make_shared_test_node(relay.clone(), "b-gateway", MeshRoutingConfig::default());
+    let provider = make_shared_test_node(relay, "c-provider", MeshRoutingConfig::default());
+    let nodes = [&requester, &gateway, &provider];
+
+    for node in &nodes {
+        node.transport.connect(&[]).await.expect("connect");
+        node.store.start().await.expect("start");
+    }
+    pump_test_network(&nodes, 24).await;
+
+    let payload = b"forwarded-via-peer".to_vec();
+    let hash = hashtree_core::sha256(&payload);
+    provider
+        .local_store
+        .put(hash, payload.clone())
+        .await
+        .expect("put");
+
+    let result = run_forwarded_request_with_pumps(&requester, "b-gateway", hash, &nodes).await;
+    assert_eq!(result, Some(payload));
 
     crate::mock::clear_channel_registry().await;
 }

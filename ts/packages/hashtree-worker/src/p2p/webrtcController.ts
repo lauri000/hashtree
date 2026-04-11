@@ -47,7 +47,7 @@ import {
   syncSelectorPeers,
 } from '@hashtree/nostr';
 import { LRUCache } from './lruCache.js';
-import { MeshQueryRouter, encodeForwardRequest } from './meshQueryRouter.js';
+import { MeshQueryRouter, encodeForwardRequest, type MeshPeerQueryOptions } from './meshQueryRouter.js';
 
 const PEER_METADATA_POINTER_SLOT_KEY = 'hashtree-webrtc/peer-metadata/latest/v1';
 const DEFAULT_REQUEST_DISPATCH: RequestDispatchConfig = {
@@ -56,6 +56,7 @@ const DEFAULT_REQUEST_DISPATCH: RequestDispatchConfig = {
   maxFanout: 8,
   hedgeIntervalMs: 120,
 };
+const ACTIVE_REQUEST_RANK_PENALTY = 3;
 
 // ============================================================================
 // Types
@@ -133,6 +134,7 @@ export class WebRTCController {
   private requestTimeout: number;
   private debug: boolean;
   private recentRequests = new LRUCache<string, number>(1000);
+  private readonly activePeerRequests = new Map<string, number>();
   private readonly meshRouter: MeshQueryRouter;
   private readonly peerSelector: PeerSelector;
   private routing: {
@@ -169,6 +171,7 @@ export class WebRTCController {
       localStore: this.localStore,
       requestTimeoutMs: this.requestTimeout,
       upstreamFetch: config.upstreamFetch,
+      queryPeers: (hash, options) => this.queryPeersWithDispatch(hash, options),
       maxForwardsPerPeerWindow: config.forwardRateLimit?.maxForwardsPerPeerWindow,
       forwardRateLimitWindowMs: config.forwardRateLimit?.windowMs,
     });
@@ -484,8 +487,10 @@ export class WebRTCController {
     if (!peer) return;
 
     // Clear pending requests
-    for (const pending of peer.pendingRequests.values()) {
+    for (const [hashKey, pending] of peer.pendingRequests.entries()) {
       clearTimeout(pending.timeout);
+      peer.pendingRequests.delete(hashKey);
+      this.releasePeerRequest(peer.peerId);
       pending.resolve(null);
     }
 
@@ -735,9 +740,17 @@ export class WebRTCController {
     const rank = new Map<string, number>(selectorOrder.map((peerId, idx) => [peerId, idx]));
 
     connectedPeers.sort((a, b) => {
+      const leftBackedOff = this.peerSelector.isPeerBackedOff(a.peerId);
+      const rightBackedOff = this.peerSelector.isPeerBackedOff(b.peerId);
+      if (leftBackedOff !== rightBackedOff) return leftBackedOff ? 1 : -1;
       if (a.pool === 'follows' && b.pool !== 'follows') return -1;
       if (a.pool !== 'follows' && b.pool === 'follows') return 1;
-      return (rank.get(a.peerId) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.peerId) ?? Number.MAX_SAFE_INTEGER);
+      const leftRank = rank.get(a.peerId) ?? Number.MAX_SAFE_INTEGER;
+      const rightRank = rank.get(b.peerId) ?? Number.MAX_SAFE_INTEGER;
+      const leftLoad = this.activePeerRequests.get(a.peerId) ?? 0;
+      const rightLoad = this.activePeerRequests.get(b.peerId) ?? 0;
+      return (leftRank + leftLoad * ACTIVE_REQUEST_RANK_PENALTY) -
+        (rightRank + rightLoad * ACTIVE_REQUEST_RANK_PENALTY);
     });
 
     return connectedPeers;
@@ -750,11 +763,13 @@ export class WebRTCController {
   private createInFlightRequest(peer: WorkerPeer, hash: Uint8Array, htl: number): InFlightPeerRequest {
     const hashKey = hashToKey(hash);
     const startedAt = Date.now();
+    this.reservePeerRequest(peer.peerId);
     this.peerSelector.recordRequest(peer.peerId, 40);
 
     const promise = new Promise<{ peerId: string; data: Uint8Array | null; elapsedMs: number }>((resolve) => {
       const timeout = setTimeout(() => {
         peer.pendingRequests.delete(hashKey);
+        this.releasePeerRequest(peer.peerId);
         this.peerSelector.recordTimeout(peer.peerId);
         resolve({ peerId: peer.peerId, data: null, elapsedMs: Math.max(1, Date.now() - startedAt) });
       }, this.requestTimeout);
@@ -810,7 +825,22 @@ export class WebRTCController {
       if (!pending) continue;
       clearTimeout(pending.timeout);
       peer.pendingRequests.delete(hashKey);
+      this.releasePeerRequest(peer.peerId);
+      pending.resolve(null);
     }
+  }
+
+  private reservePeerRequest(peerId: string): void {
+    this.activePeerRequests.set(peerId, (this.activePeerRequests.get(peerId) ?? 0) + 1);
+  }
+
+  private releasePeerRequest(peerId: string): void {
+    const next = (this.activePeerRequests.get(peerId) ?? 0) - 1;
+    if (next <= 0) {
+      this.activePeerRequests.delete(peerId);
+      return;
+    }
+    this.activePeerRequests.set(peerId, next);
   }
 
   /**
@@ -936,6 +966,7 @@ export class WebRTCController {
 
     clearTimeout(pending.timeout);
     peer.pendingRequests.delete(hashKey);
+    this.releasePeerRequest(peer.peerId);
 
     // Verify hash
     const valid = await verifyHash(res.d, res.h);
@@ -987,23 +1018,13 @@ export class WebRTCController {
     return true;
   }
 
-  // ============================================================================
-  // Public API
-  // ============================================================================
-
-  /**
-   * Request data from peers
-   */
-  async get(hash: Uint8Array): Promise<Uint8Array | null> {
-    const orderedPeers = this.orderedConnectedPeers();
+  private async queryPeersWithDispatch(hash: Uint8Array, options: MeshPeerQueryOptions): Promise<Uint8Array | null> {
+    const orderedPeers = this.orderedConnectedPeers(options.excludePeerId);
     if (orderedPeers.length === 0) return null;
 
     const dispatch = normalizeDispatchConfig(this.routing.dispatch, orderedPeers.length);
     const wavePlan = buildHedgedWavePlan(orderedPeers.length, dispatch);
     if (wavePlan.length === 0) return null;
-
-    const hashKey = hashToKey(hash);
-    this.recentRequests.set(hashKey, Date.now());
 
     const deadline = Date.now() + this.requestTimeout;
     const inFlight: InFlightPeerRequest[] = [];
@@ -1016,7 +1037,7 @@ export class WebRTCController {
       nextPeerIdx = to;
 
       for (const peer of orderedPeers.slice(from, to)) {
-        inFlight.push(this.createInFlightRequest(peer, hash, MAX_HTL));
+        inFlight.push(this.createInFlightRequest(peer, hash, options.htl));
       }
 
       const isLastWave = waveIdx === wavePlan.length - 1 || nextPeerIdx >= orderedPeers.length;
@@ -1030,15 +1051,28 @@ export class WebRTCController {
         if (!result) break;
         if (!result.data) continue;
 
-        this.clearPendingHashFromPeers(hashKey, result.task.peerId);
+        this.clearPendingHashFromPeers(hashToKey(hash), result.task.peerId);
         return result.data;
       }
 
       if (Date.now() >= deadline) break;
     }
 
-    this.clearPendingHashFromPeers(hashKey);
+    this.clearPendingHashFromPeers(hashToKey(hash));
     return null;
+  }
+
+  // ============================================================================
+  // Public API
+  // ============================================================================
+
+  /**
+   * Request data from peers
+   */
+  async get(hash: Uint8Array): Promise<Uint8Array | null> {
+    const hashKey = hashToKey(hash);
+    this.recentRequests.set(hashKey, Date.now());
+    return this.queryPeersWithDispatch(hash, { htl: MAX_HTL });
   }
 
   /**
@@ -1101,6 +1135,10 @@ export class WebRTCController {
 
     // Re-broadcast hello to trigger peer discovery with new limits
     this.sendHello();
+  }
+
+  setForwardRateLimit(config?: { maxForwardsPerPeerWindow?: number; windowMs?: number }): void {
+    this.meshRouter.setForwardRateLimit(config);
   }
 
   /**

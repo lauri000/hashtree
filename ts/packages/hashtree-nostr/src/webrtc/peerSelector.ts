@@ -190,6 +190,11 @@ export class PeerSelector {
     this.stats.delete(peerId);
   }
 
+  isPeerBackedOff(peerId: string): boolean {
+    const stats = this.stats.get(peerId);
+    return stats ? isBackedOff(stats) : false;
+  }
+
   recordRequest(peerId: string, bytes: number): void {
     const stats = this.stats.get(peerId);
     if (!stats) return;

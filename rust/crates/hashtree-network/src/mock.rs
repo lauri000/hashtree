@@ -159,7 +159,8 @@ impl SignalingTransport for MockRelayTransport {
 pub enum MockLatencyMode {
     /// Use real `tokio::time::sleep` for latency simulation.
     RealSleep,
-    /// Avoid real-time sleeps for faster simulation loops.
+    /// Avoid real-time sleeps for faster simulation loops while still preserving
+    /// relative delay through repeated scheduler yields.
     YieldOnly,
 }
 
@@ -237,7 +238,9 @@ impl PeerLink for MockDataChannel {
                     tokio::time::sleep(std::time::Duration::from_millis(self.latency_ms)).await;
                 }
                 MockLatencyMode::YieldOnly => {
-                    tokio::task::yield_now().await;
+                    for _ in 0..self.latency_ms.max(1) {
+                        tokio::task::yield_now().await;
+                    }
                 }
             }
         }

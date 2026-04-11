@@ -193,4 +193,34 @@ describe('WebRTCController routing', () => {
     await vi.advanceTimersByTimeAsync(500);
     await expect(secondGet).resolves.toBeNull();
   });
+
+  it('spreads concurrent hash lookups across peers when the best peer is already busy', async () => {
+    vi.useFakeTimers();
+    const { controller, internal, sentData } = createRoutingController({
+      requestDispatch: {
+        initialFanout: 1,
+        hedgeFanout: 1,
+        maxFanout: 2,
+        hedgeIntervalMs: 100,
+      },
+    });
+
+    connectPeer(internal, 'peer-a', 'pub-a');
+    connectPeer(internal, 'peer-b', 'pub-b');
+
+    const hashA = await sha256(new TextEncoder().encode('block-a'));
+    const hashB = await sha256(new TextEncoder().encode('block-b'));
+
+    const firstGet = controller.get(hashA);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sentData[0]?.peerId).toBe('peer-a');
+
+    const secondGet = controller.get(hashB);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sentData[1]?.peerId).toBe('peer-b');
+
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(firstGet).resolves.toBeNull();
+    await expect(secondGet).resolves.toBeNull();
+  });
 });

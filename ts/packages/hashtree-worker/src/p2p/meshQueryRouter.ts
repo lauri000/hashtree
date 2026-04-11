@@ -24,12 +24,23 @@ export interface MeshQueryRouterPeer {
   onForwardedSuppressed?: () => void;
 }
 
+export interface MeshPeerQueryOptions {
+  excludePeerId?: string;
+  htl: number;
+}
+
 export interface MeshQueryRouterConfig {
   localStore: Store;
   requestTimeoutMs: number;
   upstreamFetch?: (hash: Uint8Array) => Promise<Uint8Array | null>;
+  queryPeers?: (hash: Uint8Array, options: MeshPeerQueryOptions) => Promise<Uint8Array | null>;
   maxForwardsPerPeerWindow?: number;
   forwardRateLimitWindowMs?: number;
+}
+
+export interface MeshForwardRateLimitConfig {
+  maxForwardsPerPeerWindow?: number;
+  windowMs?: number;
 }
 
 interface InFlightQuery {
@@ -80,21 +91,23 @@ class SlidingWindowRateLimiter {
 export class MeshQueryRouter {
   private readonly localStore: Store;
   private readonly requestTimeoutMs: number;
-  private readonly rateLimiter: SlidingWindowRateLimiter;
+  private rateLimiter: SlidingWindowRateLimiter;
   private readonly peers = new Map<string, MeshQueryRouterPeer>();
   private readonly hashesByRequester = new Map<string, Set<string>>();
   private readonly inFlightByHash = new Map<string, InFlightQuery>();
   private readonly pendingUpstreamFetches = new Map<string, Promise<Uint8Array | null>>();
   private upstreamFetch?: (hash: Uint8Array) => Promise<Uint8Array | null>;
+  private queryPeers?: (hash: Uint8Array, options: MeshPeerQueryOptions) => Promise<Uint8Array | null>;
 
   constructor(config: MeshQueryRouterConfig) {
     this.localStore = config.localStore;
     this.requestTimeoutMs = config.requestTimeoutMs;
     this.upstreamFetch = config.upstreamFetch;
-    this.rateLimiter = new SlidingWindowRateLimiter(
-      config.maxForwardsPerPeerWindow ?? 64,
-      config.forwardRateLimitWindowMs ?? 1000,
-    );
+    this.queryPeers = config.queryPeers;
+    this.rateLimiter = this.createRateLimiter({
+      maxForwardsPerPeerWindow: config.maxForwardsPerPeerWindow,
+      windowMs: config.forwardRateLimitWindowMs,
+    });
   }
 
   registerPeer(peer: MeshQueryRouterPeer): void {
@@ -123,6 +136,10 @@ export class MeshQueryRouter {
     this.upstreamFetch = upstreamFetch;
   }
 
+  setForwardRateLimit(config?: MeshForwardRateLimitConfig): void {
+    this.rateLimiter = this.createRateLimiter(config);
+  }
+
   hasInFlight(hashKey: string): boolean {
     return this.inFlightByHash.has(hashKey);
   }
@@ -134,6 +151,13 @@ export class MeshQueryRouter {
     this.hashesByRequester.clear();
     this.pendingUpstreamFetches.clear();
     this.rateLimiter.clear();
+  }
+
+  private createRateLimiter(config?: MeshForwardRateLimitConfig): SlidingWindowRateLimiter {
+    return new SlidingWindowRateLimiter(
+      config?.maxForwardsPerPeerWindow ?? 64,
+      config?.windowMs ?? 1000,
+    );
   }
 
   async handleRequest(requesterId: string, req: DataRequest): Promise<void> {
@@ -158,9 +182,10 @@ export class MeshQueryRouter {
       return;
     }
 
+    const peerQueryActive = this.startPeerQuery(hashKey, req.h, requesterId, req.htl ?? MAX_HTL);
     const upstreamActive = this.startUpstreamFetch(hashKey, req.h);
-    const forwarded = this.forwardRequest(requesterId, req.h, req.htl ?? MAX_HTL);
-    if (forwarded > 0) {
+    const forwarded = peerQueryActive ? 1 : this.forwardRequest(requesterId, req.h, req.htl ?? MAX_HTL);
+    if (forwarded > 0 || upstreamActive) {
       requester.onForwardedRequest?.();
       return;
     }
@@ -263,6 +288,35 @@ export class MeshQueryRouter {
       }
     }
     return forwarded;
+  }
+
+  private startPeerQuery(hashKey: string, hash: Uint8Array, requesterId: string, htl: number): boolean {
+    if (!this.queryPeers || !shouldForward(htl)) {
+      return false;
+    }
+
+    const requester = this.peers.get(requesterId);
+    if (!requester) {
+      return false;
+    }
+
+    const nextHtl = decrementHTL(htl, requester.getHtlConfig());
+    void this.queryPeers(hash, {
+      excludePeerId: requesterId,
+      htl: nextHtl,
+    }).then(async (data) => {
+      if (!data || !this.inFlightByHash.has(hashKey)) {
+        return;
+      }
+
+      const valid = await verifyHash(data, hash);
+      if (!valid) {
+        return;
+      }
+
+      await this.resolve(hash, data);
+    }).catch(() => undefined);
+    return true;
   }
 
   private startUpstreamFetch(hashKey: string, hash: Uint8Array): boolean {

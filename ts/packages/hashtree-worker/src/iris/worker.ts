@@ -582,6 +582,13 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
         }
         respond({ type: 'void', id: msg.id });
         break;
+      case 'setWebRTCForwardRateLimit':
+        if (_config) {
+          _config.forwardRateLimit = msg.forwardRateLimit;
+        }
+        webrtc?.setForwardRateLimit(msg.forwardRateLimit);
+        respond({ type: 'void', id: msg.id });
+        break;
       case 'sendWebRTCHello':
         webrtc?.broadcastHello();
         respond({ type: 'void', id: msg.id });
@@ -839,6 +846,7 @@ async function handleInit(id: string, cfg: WorkerConfig) {
       getFollows, // Used to classify peers into follows/other pools
       debug: false,
       requestTimeout: WEBRTC_REQUEST_TIMEOUT_MS,
+      forwardRateLimit: cfg.forwardRateLimit,
       upstreamFetch: async (hash) => (await meshStore?.getDetailed(hash, {
         skipPrimary: true,
         sourceIds: ['blossom'],
