@@ -11,6 +11,9 @@
 import type { WebRTCCommand, WebRTCEvent } from './protocol.js';
 import { BoundedQueue } from './boundedQueue.js';
 import { getErrorMessage } from './errorMessage.js';
+import { UploadRateLimiter } from './uploadRateLimiter.js';
+
+const REQUEST_MESSAGE_TYPE = 0x00;
 
 const isTestMode = typeof globalThis !== 'undefined' &&
   Boolean((globalThis as { __HTREE_P2P_TEST_MODE__?: boolean }).__HTREE_P2P_TEST_MODE__);
@@ -29,20 +32,28 @@ interface PeerConnection {
   sendQueue: BoundedQueue<Uint8Array>;
   sending: boolean;
   bufferHighSignaled: boolean;  // Track if we've signaled high buffer to worker
+  drainTimeoutId: ReturnType<typeof setTimeout> | null;
 }
 
 type EventCallback = (event: WebRTCEvent) => void;
+type WebRTCProxyConfig = {
+  maxUploadBytesPerSecond?: number | null;
+};
 
 export class WebRTCProxy {
   private peers = new Map<string, PeerConnection>();
   private onEvent: EventCallback;
+  private readonly uploadRateLimiter: UploadRateLimiter;
 
   // Queue limits to prevent memory blowup on slow/stalled connections
   private static readonly MAX_QUEUE_BYTES = 8 * 1024 * 1024;  // 8MB per peer
   private static readonly MAX_QUEUE_ITEMS = 100;
 
-  constructor(onEvent: EventCallback) {
+  constructor(onEvent: EventCallback, config: WebRTCProxyConfig = {}) {
     this.onEvent = onEvent;
+    this.uploadRateLimiter = new UploadRateLimiter({
+      bytesPerSecond: config.maxUploadBytesPerSecond,
+    });
   }
 
   private createSendQueue(peerId: string): BoundedQueue<Uint8Array> {
@@ -104,6 +115,7 @@ export class WebRTCProxy {
       sendQueue: this.createSendQueue(peerId),
       sending: false,
       bufferHighSignaled: false,
+      drainTimeoutId: null,
     };
 
     // Create data channel (offerer creates, answerer receives via ondatachannel)
@@ -289,11 +301,11 @@ export class WebRTCProxy {
   private static readonly QUEUE_LOW_THRESHOLD = 1 * 1024 * 1024;
 
   private getQueueSize(peer: PeerConnection): number {
-    let size = 0;
-    for (const data of peer.sendQueue) {
-      size += data.length;
-    }
-    return size;
+    return peer.sendQueue.bytes;
+  }
+
+  private isPriorityDataMessage(data: Uint8Array): boolean {
+    return data.byteLength > 0 && data[0] === REQUEST_MESSAGE_TYPE;
   }
 
   private sendData(peerId: string, data: Uint8Array): void {
@@ -302,8 +314,13 @@ export class WebRTCProxy {
       return;
     }
 
-    // BoundedQueue handles overflow automatically (drops oldest, logs via onDrop)
-    peer.sendQueue.push(data);
+    // Small request frames should overtake bulky response traffic so cache misses
+    // are not starved by background uploads on the same peer connection.
+    if (this.isPriorityDataMessage(data)) {
+      peer.sendQueue.unshift(data);
+    } else {
+      peer.sendQueue.push(data);
+    }
 
     // Check if queue is getting too large - signal worker to slow down
     const queueSize = this.getQueueSize(peer);
@@ -324,11 +341,28 @@ export class WebRTCProxy {
       return;
     }
 
+    if (peer.drainTimeoutId) {
+      clearTimeout(peer.drainTimeoutId);
+      peer.drainTimeoutId = null;
+    }
+
     peer.sending = true;
     const dc = peer.dataChannel;
 
     // Send as much as we can without overflowing the buffer
     while (!peer.sendQueue.isEmpty && dc.bufferedAmount < WebRTCProxy.BUFFER_THRESHOLD) {
+      const nextData = peer.sendQueue.peek();
+      if (!nextData) {
+        break;
+      }
+
+      const reservation = this.uploadRateLimiter.reserve(nextData.byteLength);
+      if (!reservation.allowed) {
+        peer.sending = false;
+        this.scheduleRateLimitedDrain(peerId, reservation.delayMs);
+        return;
+      }
+
       const data = peer.sendQueue.shift()!;
       try {
         const payload = data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
@@ -378,6 +412,10 @@ export class WebRTCProxy {
     // Clear send queue
     peer.sendQueue.clear();
     peer.sending = false;
+    if (peer.drainTimeoutId) {
+      clearTimeout(peer.drainTimeoutId);
+      peer.drainTimeoutId = null;
+    }
 
     // Close data channel
     if (peer.dataChannel) {
@@ -426,6 +464,35 @@ export class WebRTCProxy {
    */
   getPeerIds(): string[] {
     return Array.from(this.peers.keys());
+  }
+
+  setUploadLimitBytesPerSecond(maxUploadBytesPerSecond?: number | null): void {
+    this.uploadRateLimiter.setBytesPerSecond(maxUploadBytesPerSecond);
+    for (const peerId of this.peers.keys()) {
+      const peer = this.peers.get(peerId);
+      if (!peer || peer.sendQueue.isEmpty) {
+        continue;
+      }
+      if (!peer.sending) {
+        this.drainQueue(peerId);
+      }
+    }
+  }
+
+  private scheduleRateLimitedDrain(peerId: string, delayMs: number): void {
+    const peer = this.peers.get(peerId);
+    if (!peer || peer.drainTimeoutId) {
+      return;
+    }
+
+    peer.drainTimeoutId = setTimeout(() => {
+      const activePeer = this.peers.get(peerId);
+      if (!activePeer) {
+        return;
+      }
+      activePeer.drainTimeoutId = null;
+      this.drainQueue(peerId);
+    }, delayMs);
   }
 }
 

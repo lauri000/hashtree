@@ -64,6 +64,34 @@ export class BoundedQueue<T> {
   }
 
   /**
+   * Add item to the front of the queue, dropping items from the back if limits are exceeded.
+   * Useful for urgent control messages that should overtake bulk background traffic.
+   */
+  unshift(item: T): number {
+    const itemBytes = this.getBytes(item);
+    let dropped = 0;
+
+    while (
+      this.items.length > 0 &&
+      (this.items.length >= this.maxItems || this.bytesUsed + itemBytes > this.maxBytes)
+    ) {
+      const droppedItem = this.items.pop()!;
+      const droppedBytes = this.getBytes(droppedItem);
+      this.bytesUsed -= droppedBytes;
+      dropped++;
+
+      if (this.onDrop) {
+        const reason = this.items.length >= this.maxItems ? 'items' : 'bytes';
+        this.onDrop(droppedItem, reason);
+      }
+    }
+
+    this.items.unshift(item);
+    this.bytesUsed += itemBytes;
+    return dropped;
+  }
+
+  /**
    * Remove and return oldest item, or undefined if empty
    */
   shift(): T | undefined {
