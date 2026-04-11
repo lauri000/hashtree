@@ -10,6 +10,35 @@ const ROOT: CID = {
   hash: Uint8Array.from({ length: 32 }, (_, index) => index + 1),
 };
 
+class FakeWorkerGlobal {
+  private listener: EventListener | null = null;
+
+  postMessage(message: unknown): void {
+    postMessageMock(message);
+  }
+
+  addEventListener(_type: 'message', listener: EventListenerOrEventListenerObject): void {
+    if (typeof listener === 'function') {
+      this.listener = listener;
+      return;
+    }
+    this.listener = listener.handleEvent.bind(listener) as EventListener;
+  }
+
+  removeEventListener(_type: 'message', listener: EventListenerOrEventListenerObject): void {
+    const normalized = typeof listener === 'function'
+      ? listener
+      : listener.handleEvent.bind(listener);
+    if (this.listener === normalized) {
+      this.listener = null;
+    }
+  }
+
+  dispatch(data: unknown): void {
+    this.listener?.({ data } as unknown as Event);
+  }
+}
+
 class FakeHashTree {
   constructor(_config: unknown) {}
 }
@@ -119,10 +148,7 @@ describe('worker root resolution message flow', () => {
     Object.defineProperty(globalThis, 'self', {
       configurable: true,
       writable: true,
-      value: {
-        postMessage: postMessageMock,
-        onmessage: null,
-      },
+      value: new FakeWorkerGlobal(),
     });
   });
 
@@ -133,32 +159,27 @@ describe('worker root resolution message flow', () => {
 
   it('routes resolveRoot requests through the worker protocol', async () => {
     resolveRootPathFromRelaysMock.mockResolvedValue(ROOT);
-    await import('../src/worker.js');
+    const { attachHashtreeWorker } = await import('../src/worker.js');
 
-    const ctx = globalThis.self as {
-      onmessage: ((event: { data: unknown }) => void) | null;
-    };
+    const ctx = globalThis.self as FakeWorkerGlobal;
+    attachHashtreeWorker(ctx);
 
-    ctx.onmessage?.({
-      data: {
-        type: 'init',
-        id: 'init-1',
-        config: {
-          relays: ['wss://relay.example'],
-        },
+    ctx.dispatch({
+      type: 'init',
+      id: 'init-1',
+      config: {
+        relays: ['wss://relay.example'],
       },
     });
     await flush();
 
-    ctx.onmessage?.({
-      data: {
-        type: 'resolveRoot',
-        id: 'resolve-1',
-        npub: 'npub1example',
-        path: 'audio-catalog/root.json',
-        timeoutMs: 4_500,
-        settleMs: 500,
-      },
+    ctx.dispatch({
+      type: 'resolveRoot',
+      id: 'resolve-1',
+      npub: 'npub1example',
+      path: 'audio-catalog/root.json',
+      timeoutMs: 4_500,
+      settleMs: 500,
     });
     await flush();
 
@@ -182,32 +203,27 @@ describe('worker root resolution message flow', () => {
       initialCid: ROOT,
       close: closeWatchMock,
     });
-    await import('../src/worker.js');
+    const { attachHashtreeWorker } = await import('../src/worker.js');
 
-    const ctx = globalThis.self as {
-      onmessage: ((event: { data: unknown }) => void) | null;
-    };
+    const ctx = globalThis.self as FakeWorkerGlobal;
+    attachHashtreeWorker(ctx);
 
-    ctx.onmessage?.({
-      data: {
-        type: 'init',
-        id: 'init-2',
-        config: {
-          relays: ['wss://relay.example'],
-        },
+    ctx.dispatch({
+      type: 'init',
+      id: 'init-2',
+      config: {
+        relays: ['wss://relay.example'],
       },
     });
     await flush();
 
-    ctx.onmessage?.({
-      data: {
-        type: 'watchRoot',
-        id: 'watch-1',
-        npub: 'npub1example',
-        path: 'audio-catalog/root.json',
-        timeoutMs: 4_500,
-        settleMs: 500,
-      },
+    ctx.dispatch({
+      type: 'watchRoot',
+      id: 'watch-1',
+      npub: 'npub1example',
+      path: 'audio-catalog/root.json',
+      timeoutMs: 4_500,
+      settleMs: 500,
     });
     await flush();
 
@@ -227,12 +243,10 @@ describe('worker root resolution message flow', () => {
       cid: undefined,
     });
 
-    ctx.onmessage?.({
-      data: {
-        type: 'unwatchRoot',
-        id: 'unwatch-1',
-        watchId: started!.watchId,
-      },
+    ctx.dispatch({
+      type: 'unwatchRoot',
+      id: 'unwatch-1',
+      watchId: started!.watchId,
     });
     await flush();
 
@@ -248,32 +262,27 @@ describe('worker root resolution message flow', () => {
       initialCid: null,
       close: closeWatchMock,
     });
-    await import('../src/worker.js');
+    const { attachHashtreeWorker } = await import('../src/worker.js');
 
-    const ctx = globalThis.self as {
-      onmessage: ((event: { data: unknown }) => void) | null;
-    };
+    const ctx = globalThis.self as FakeWorkerGlobal;
+    attachHashtreeWorker(ctx);
 
-    ctx.onmessage?.({
-      data: {
-        type: 'init',
-        id: 'init-3',
-        config: {
-          relays: ['wss://relay.example'],
-        },
+    ctx.dispatch({
+      type: 'init',
+      id: 'init-3',
+      config: {
+        relays: ['wss://relay.example'],
       },
     });
     await flush();
 
-    ctx.onmessage?.({
-      data: {
-        type: 'watchRoot',
-        id: 'watch-2',
-        npub: 'npub1example',
-        path: 'audio-catalog/root.json',
-        timeoutMs: 4_500,
-        settleMs: 500,
-      },
+    ctx.dispatch({
+      type: 'watchRoot',
+      id: 'watch-2',
+      npub: 'npub1example',
+      path: 'audio-catalog/root.json',
+      timeoutMs: 4_500,
+      settleMs: 500,
     });
     await flush();
 

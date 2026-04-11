@@ -71,6 +71,27 @@ await runtime.media.ensureReady({
 });
 ```
 
+## Embedding In A Custom Worker
+
+If you already have your own worker and do not want `@hashtree/worker` to own the whole
+worker entrypoint, attach the protocol handler yourself:
+
+```typescript
+import { attachHashtreeWorker } from '@hashtree/worker/worker';
+
+attachHashtreeWorker(self);
+
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'my-custom-message') {
+    // Your own worker logic.
+  }
+});
+```
+
+If you want stricter isolation, attach it to a dedicated `MessagePort` instead of `self`.
+That lets a larger worker multiplex hashtree traffic without sharing one global message
+channel.
+
 Behavior:
 
 - In plain web mode, `runtime.endpoints` keeps your configured public relays and Blossom servers.
@@ -91,6 +112,7 @@ That lets the service worker map fetches back to the correct worker port when mu
 ## Exports
 
 - `@hashtree/worker` — `createHtreeRuntime`, `resolveRuntimeEndpoints`, and `HashtreeWorkerClient`
+- `@hashtree/worker/worker` — `attachHashtreeWorker(...)` for embedding the worker protocol into a custom worker
 - `@hashtree/worker/p2p` — `WebRTCController` / `WebRTCProxy` for P2P data channel management
 - `@hashtree/worker/entry` — Worker entry point
 - `@hashtree/worker/protocol` — Shared message types between main thread and worker

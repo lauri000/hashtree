@@ -22,6 +22,10 @@
       "types": "./dist/entry.d.ts",
       "import": "./dist/entry.js"
     },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js"
+    },
     "./iris-entry": {
       "types": "./dist/iris-entry.d.ts",
       "import": "./dist/iris-entry.js"

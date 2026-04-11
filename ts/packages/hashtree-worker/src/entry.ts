@@ -1,1 +1,3 @@
-import './worker.js';
+import { attachHashtreeWorker } from './worker.js';
+
+attachHashtreeWorker();

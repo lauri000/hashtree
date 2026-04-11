@@ -34,7 +34,15 @@ const DEFAULT_STORAGE_MAX_BYTES = 1024 * 1024 * 1024;
 const DEFAULT_CONNECTIVITY_PROBE_INTERVAL_MS = 20_000;
 const P2P_FETCH_TIMEOUT_MS = 2_000;
 
-const ctx: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
+export interface HashtreeWorkerMessageEndpoint {
+  postMessage(message: WorkerResponse): void;
+  addEventListener(type: 'message', listener: EventListenerOrEventListenerObject): void;
+  removeEventListener(type: 'message', listener: EventListenerOrEventListenerObject): void;
+  start?: () => void;
+}
+
+let endpoint: HashtreeWorkerMessageEndpoint | null = null;
+let endpointListener: EventListener | null = null;
 
 let storage: IdbBlobStorage | null = null;
 let blossom: BlossomTransport | null = null;
@@ -114,7 +122,7 @@ const EMPTY_BLOSSOM_BANDWIDTH: BlossomBandwidthState = {
 let blossomBandwidth: BlossomBandwidthState = { ...EMPTY_BLOSSOM_BANDWIDTH };
 
 function respond(message: WorkerResponse): void {
-  ctx.postMessage(message);
+  endpoint?.postMessage(message);
 }
 
 function emitDiagnostic(
@@ -923,9 +931,40 @@ async function handleRequest(req: WorkerRequest): Promise<void> {
   }
 }
 
-ctx.onmessage = (event: MessageEvent<WorkerRequest>) => {
-  const req = event.data;
-  void handleRequest(req).catch((err) => {
-    respond({ type: 'error', id: req.id, error: getErrorMessage(err) });
-  });
-};
+function isWorkerRequestMessage(value: unknown): value is WorkerRequest {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && typeof (value as { type?: unknown }).type === 'string'
+  );
+}
+
+export function attachHashtreeWorker(
+  target: HashtreeWorkerMessageEndpoint = self as unknown as DedicatedWorkerGlobalScope,
+): () => void {
+  if (endpoint && endpointListener) {
+    endpoint.removeEventListener('message', endpointListener);
+  }
+
+  endpoint = target;
+  endpointListener = ((event: Event) => {
+    const req = (event as MessageEvent<unknown>).data;
+    if (!isWorkerRequestMessage(req)) {
+      return;
+    }
+    void handleRequest(req).catch((err) => {
+      respond({ type: 'error', id: req.id, error: getErrorMessage(err) });
+    });
+  }) as EventListener;
+
+  endpoint.addEventListener('message', endpointListener);
+  endpoint.start?.();
+
+  return () => {
+    target.removeEventListener('message', endpointListener as EventListener);
+    if (endpoint === target) {
+      endpoint = null;
+      endpointListener = null;
+    }
+  };
+}
