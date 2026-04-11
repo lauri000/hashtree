@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.1.25 - 2026-04-11
+
+Changes since the previous npm package publish.
+
+### Added
+
+- Added `@hashtree/worker/iris-client` with a reusable `IrisWorkerClient` wrapper for `iris-entry` workers, including tree-root metadata lookups, tree-root subscription helpers, and media-port registration.
+
+### Improved
+
+- Made it possible for Iris runtime hosts such as `iris-sites` to consume the published Iris worker client instead of carrying a repo-local duplicate of the message plumbing.
+
 ## 0.1.24 - 2026-04-11
 
 Changes since the previous npm package publish.

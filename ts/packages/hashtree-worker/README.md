@@ -26,6 +26,29 @@ const { hashHex } = await client.putBlob(data);
 const { data: blob } = await client.getBlob(hashHex);
 ```
 
+## Iris Worker Client
+
+If you are using `@hashtree/worker/iris-entry?worker` and need Iris-specific tree-root
+metadata or subscription calls, use the dedicated Iris wrapper:
+
+```typescript
+import { IrisWorkerClient } from '@hashtree/worker/iris-client';
+import HashtreeWorker from '@hashtree/worker/iris-entry?worker';
+
+const client = new IrisWorkerClient(HashtreeWorker, {
+  storeName: 'iris-sites-worker',
+  relays: ['wss://relay.damus.io'],
+  blossomServers: [{ url: 'https://upload.iris.to', read: false, write: true }],
+  pubkey: '336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b',
+});
+
+await client.init();
+const root = await client.getTreeRootInfo('npub1example', 'sites/example');
+const stop = client.onTreeRootUpdate((update) => {
+  console.log(update.treeName, update.visibility);
+});
+```
+
 ## Iris-Compatible Runtime Defaults
 
 When the app runs inside Iris or another shell that injects `window.__HTREE_SERVER_URL__`
@@ -112,6 +135,7 @@ That lets the service worker map fetches back to the correct worker port when mu
 ## Exports
 
 - `@hashtree/worker` — `createHtreeRuntime`, `resolveRuntimeEndpoints`, and `HashtreeWorkerClient`
+- `@hashtree/worker/iris-client` — `IrisWorkerClient` plus Iris-specific tree-root metadata types
 - `@hashtree/worker/worker` — `attachHashtreeWorker(...)` for embedding the worker protocol into a custom worker
 - `@hashtree/worker/p2p` — `WebRTCController` / `WebRTCProxy` for P2P data channel management
 - `@hashtree/worker/entry` — Worker entry point
