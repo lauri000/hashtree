@@ -161,6 +161,22 @@ describe('HashTree', () => {
       expect(entries[0].name).toBe('test.txt');
     });
 
+    it('should keep setEntry ordering lexicographic for unicode names', async () => {
+      const { cid: rootCid } = await tree.putDirectory([], { unencrypted: true });
+      const names = ['bastard', 'berzerker', 'bong', 'bätlick'];
+      let currentRoot = rootCid;
+
+      for (const name of names) {
+        const { cid: fileCid, size } = await tree.putFile(new TextEncoder().encode(name), { unencrypted: true });
+        currentRoot = await tree.setEntry(currentRoot, [], name, fileCid, size);
+      }
+
+      const entries = await tree.listDirectory(currentRoot);
+      expect(entries.map((entry) => entry.name)).toEqual(
+        [...names].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)),
+      );
+    });
+
     it('should update existing entry', async () => {
       const { cid: file1 } = await tree.putFile(new TextEncoder().encode('v1'), { unencrypted: true });
       const { cid: rootCid } = await tree.putDirectory([{ name: 'file.txt', cid: file1, size: 2 }], { unencrypted: true });

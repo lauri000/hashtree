@@ -130,6 +130,21 @@ describe('HashTree write operations', () => {
       expect(node!.links.map(l => l.name)).toEqual(['apple', 'mango', 'zebra']);
     });
 
+    it('should sort unicode names by lexicographic code-point order', async () => {
+      const hash = await tree.putBlob(new Uint8Array([1]));
+      const names = ['bastard', 'berzerker', 'bong', 'bätlick'];
+
+      const { cid: dirCid } = await tree.putDirectory(
+        names.map((name) => ({ name, cid: cid(hash), size: 1 })),
+        { unencrypted: true },
+      );
+
+      const node = await tree.getTreeNode(dirCid);
+      expect(node!.links.map((link) => link.name)).toEqual(
+        [...names].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)),
+      );
+    });
+
     it('should create nested directories', async () => {
       const fileData = new Uint8Array([1, 2, 3]);
       const fileHash = await tree.putBlob(fileData);

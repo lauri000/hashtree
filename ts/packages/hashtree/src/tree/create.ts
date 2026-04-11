@@ -5,6 +5,7 @@
 import { Store, Hash, TreeNode, Link, LinkType, CID } from '../types.js';
 import { sha256 } from '../hash.js';
 import { encodeAndHash } from '../codec.js';
+import { compareNames } from '../compare.js';
 
 export interface CreateConfig {
   store: Store;
@@ -75,7 +76,7 @@ export async function putDirectory(
   entries: DirEntry[]
 ): Promise<Hash> {
   const { store, chunkSize } = config;
-  const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name));
+  const sorted = [...entries].sort((a, b) => compareNames(a.name, b.name));
 
   const links: Link[] = sorted.map(e => ({
     hash: e.cid.hash,
@@ -124,4 +125,3 @@ export async function buildTree(
   await store.put(hash, data);
   return hash;
 }
-

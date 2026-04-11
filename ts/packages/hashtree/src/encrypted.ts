@@ -13,6 +13,7 @@ import { Store, Hash, TreeNode, Link, LinkType, toHex } from './types.js';
 import { sha256 } from './hash.js';
 import { encodeAndHash, decodeTreeNode, tryDecodeTreeNode } from './codec.js';
 import { encryptChk, decryptChk, type EncryptionKey } from './crypto.js';
+import { compareNames } from './compare.js';
 
 export interface EncryptedTreeConfig {
   store: Store;
@@ -548,7 +549,7 @@ export async function putDirectoryEncrypted(
   entries: EncryptedDirEntry[]
 ): Promise<EncryptedPutResult> {
   const { store, chunkSize } = config;
-  const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name));
+  const sorted = [...entries].sort((a, b) => compareNames(a.name, b.name));
 
   const links: Link[] = sorted.map(e => ({
     hash: e.hash,

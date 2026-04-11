@@ -9,6 +9,7 @@
 import { Store, Hash, TreeNode, Link, LinkType } from './types.js';
 import { sha256 } from './hash.js';
 import { encodeAndHash } from './codec.js';
+import { compareNames } from './compare.js';
 
 /**
  * Default chunk size: 2MB (optimized for blossom uploads)
@@ -169,7 +170,7 @@ export class TreeBuilder {
    */
   async putDirectory(entries: DirEntry[]): Promise<Hash> {
     // Sort entries by name for deterministic hashing
-    const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name));
+    const sorted = [...entries].sort((a, b) => compareNames(a.name, b.name));
 
     const links: Link[] = sorted.map(e => ({
       hash: e.hash,
@@ -358,4 +359,3 @@ export class StreamBuilder {
     };
   }
 }
-
