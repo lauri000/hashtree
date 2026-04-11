@@ -294,8 +294,10 @@ function createStorageStore(): Store {
       return true;
     },
     get: async (hash: Hash): Promise<Uint8Array | null> => {
-      const loaded = await loadBlobData(toHex(hash));
-      return loaded?.data ?? null;
+      if (!storage) {
+        return null;
+      }
+      return storage.get(toHex(hash));
     },
     has: async (hash: Hash): Promise<boolean> => {
       if (!storage) return false;
