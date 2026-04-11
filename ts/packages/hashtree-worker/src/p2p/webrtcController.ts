@@ -33,8 +33,6 @@ import {
   hashToKey,
   verifyHash,
   generatePeerHTLConfig,
-  decrementHTL,
-  shouldForward,
   type SignalingMessage,
   type PeerPool,
   type DataRequest,
@@ -49,7 +47,7 @@ import {
   syncSelectorPeers,
 } from '@hashtree/nostr';
 import { LRUCache } from './lruCache.js';
-import { QueryForwardingMachine } from './queryForwardingMachine.js';
+import { MeshQueryRouter, encodeForwardRequest } from './meshQueryRouter.js';
 
 const PEER_METADATA_POINTER_SLOT_KEY = 'hashtree-webrtc/peer-metadata/latest/v1';
 const DEFAULT_REQUEST_DISPATCH: RequestDispatchConfig = {
@@ -73,7 +71,6 @@ interface WorkerPeer {
   answerCreated: boolean;  // Track if we've already created an answer (inbound only)
   htlConfig: PeerHTLConfig;
   pendingRequests: Map<string, PendingRequest>;
-  theirRequests: LRUCache<string, { hash: Uint8Array; requestedAt: number }>;
   stats: PeerStats;
   createdAt: number;
   connectedAt?: number;
@@ -136,9 +133,7 @@ export class WebRTCController {
   private requestTimeout: number;
   private debug: boolean;
   private recentRequests = new LRUCache<string, number>(1000);
-  private forwardingMachine: QueryForwardingMachine;
-  private upstreamFetch?: (hash: Uint8Array) => Promise<Uint8Array | null>;
-  private pendingUpstreamFetches = new Map<string, Promise<Uint8Array | null>>();
+  private readonly meshRouter: MeshQueryRouter;
   private readonly peerSelector: PeerSelector;
   private routing: {
     selectionStrategy: SelectionStrategy;
@@ -161,7 +156,6 @@ export class WebRTCController {
     this.localStore = config.localStore;
     this.sendCommand = config.sendCommand;
     this.sendSignaling = config.sendSignaling;
-    this.upstreamFetch = config.upstreamFetch;
     this.requestTimeout = config.requestTimeout ?? 1000;
     this.debug = config.debug ?? false;
     this.routing = {
@@ -171,13 +165,12 @@ export class WebRTCController {
     };
     this.peerSelector = PeerSelector.withStrategy(this.routing.selectionStrategy);
     this.peerSelector.setFairness(this.routing.fairnessEnabled);
-    this.forwardingMachine = new QueryForwardingMachine({
+    this.meshRouter = new MeshQueryRouter({
+      localStore: this.localStore,
       requestTimeoutMs: this.requestTimeout,
+      upstreamFetch: config.upstreamFetch,
       maxForwardsPerPeerWindow: config.forwardRateLimit?.maxForwardsPerPeerWindow,
       forwardRateLimitWindowMs: config.forwardRateLimit?.windowMs,
-      onForwardTimeout: ({ hashKey, requesterIds }) => {
-        this.clearRequesterMarkers(hashKey, requesterIds);
-      },
     });
 
     // Default classifier: check if pubkey is in follows
@@ -217,8 +210,7 @@ export class WebRTCController {
     for (const peerId of this.peers.keys()) {
       this.closePeer(peerId);
     }
-    this.forwardingMachine.stop();
-    this.pendingUpstreamFetches.clear();
+    this.meshRouter.stop();
   }
 
   // ============================================================================
@@ -443,7 +435,6 @@ export class WebRTCController {
       answerCreated: false,
       htlConfig: generatePeerHTLConfig(),
       pendingRequests: new Map(),
-      theirRequests: new LRUCache(200),
       stats: {
         requestsSent: 0,
         requestsReceived: 0,
@@ -462,6 +453,22 @@ export class WebRTCController {
 
     this.peers.set(peerId, peer);
     this.peerSelector.addPeer(peerId);
+    this.meshRouter.registerPeer({
+      peerId,
+      canSend: () => peer.dataChannelReady,
+      getHtlConfig: () => peer.htlConfig,
+      sendRequest: (hash, htl) => this.sendRequestToPeer(peer, hash, htl),
+      sendResponse: async (hash, data) => this.sendResponse(peer, hash, data),
+      onForwardedRequest: () => {
+        peer.stats.forwardedRequests++;
+      },
+      onForwardedResolved: () => {
+        peer.stats.forwardedResolved++;
+      },
+      onForwardedSuppressed: () => {
+        peer.stats.forwardedSuppressed++;
+      },
+    });
     this.sendCommand({ type: 'rtc:createPeer', peerId, pubkey });
 
     return peer;
@@ -487,7 +494,7 @@ export class WebRTCController {
     this.peers.delete(peerId);
     this.pendingRemoteCandidates.delete(peerId);
     this.peerSelector.removePeer(peerId);
-    this.forwardingMachine.removePeer(peerId);
+    this.meshRouter.removePeer(peerId);
 
     this.log(`Closed peer: ${peerId.slice(0, 20)}`);
   }
@@ -895,62 +902,7 @@ export class WebRTCController {
   }
 
   private async processRequest(peer: WorkerPeer, req: DataRequest): Promise<void> {
-    const hashKey = hashToKey(req.h);
-
-    // Try to get from local store
-    const data = await this.localStore.get(req.h);
-
-    if (data) {
-      // Send response
-      await this.sendResponse(peer, req.h, data);
-    } else {
-      // Track their request for later push
-      peer.theirRequests.set(hashKey, {
-        hash: req.h,
-        requestedAt: Date.now(),
-      });
-
-      const upstreamActive = this.startUpstreamFetch(hashKey, req.h);
-
-      // Forward if HTL allows
-      const htl = req.htl ?? MAX_HTL;
-      if (shouldForward(htl)) {
-        const newHtl = decrementHTL(htl, peer.htlConfig);
-        const decision = this.forwardingMachine.beginForward(
-          hashKey,
-          peer.peerId,
-          this.getForwardTargets(peer.peerId),
-        );
-
-        if (decision.kind === 'suppressed') {
-          peer.stats.forwardedSuppressed++;
-          return;
-        }
-        if (decision.kind === 'rate_limited') {
-          if (!upstreamActive) {
-            peer.theirRequests.delete(hashKey);
-          }
-          this.log(`Forward rate-limited for ${peer.peerId.slice(0, 20)} hash ${hashKey.slice(0, 16)}`);
-          return;
-        }
-        if (decision.kind === 'no_targets') {
-          if (!upstreamActive) {
-            peer.theirRequests.delete(hashKey);
-          }
-          return;
-        }
-
-        const forwarded = this.forwardRequest(req.h, decision.targets, newHtl);
-        if (forwarded <= 0) {
-          const requesterIds = this.forwardingMachine.cancelForward(hashKey);
-          if (!upstreamActive) {
-            this.clearRequesterMarkers(hashKey, requesterIds);
-          }
-          return;
-        }
-        peer.stats.forwardedRequests++;
-      }
-    }
+    await this.meshRouter.handleRequest(peer.peerId, req);
   }
 
   private async handleResponse(peer: WorkerPeer, res: DataResponse): Promise<void> {
@@ -960,7 +912,7 @@ export class WebRTCController {
     const pending = peer.pendingRequests.get(hashKey);
 
     if (!pending) {
-      const hasRequesters = Array.from(this.peers.values()).some(p => p.theirRequests.has(hashKey));
+      const hasRequesters = this.meshRouter.hasInFlight(hashKey);
       // Late response: cache if we requested this hash recently
       const requestedAt = this.recentRequests.get(hashKey);
       if (!requestedAt && !hasRequesters) return;
@@ -976,8 +928,7 @@ export class WebRTCController {
           this.recentRequests.delete(hashKey);
         }
         if (hasRequesters) {
-          await this.pushToRequesters(res.h, res.d, peer.peerId);
-          this.forwardingMachine.resolveForward(hashKey);
+          await this.meshRouter.resolve(res.h, res.d);
         }
       }
       return;
@@ -995,9 +946,7 @@ export class WebRTCController {
       this.peerSelector.recordSuccess(peer.peerId, elapsedMs, res.d.length);
       pending.resolve(res.d);
 
-      // Push to peers who requested this
-      await this.pushToRequesters(res.h, res.d, peer.peerId);
-      this.forwardingMachine.resolveForward(hashKey);
+      await this.meshRouter.resolve(res.h, res.d);
     } else {
       this.log(`Hash mismatch from ${peer.peerId}`);
       this.peerSelector.recordFailure(peer.peerId);
@@ -1028,94 +977,13 @@ export class WebRTCController {
     }
   }
 
-  private getForwardTargets(excludePeerId: string): string[] {
-    const targets: string[] = [];
-    for (const [peerId, peer] of this.peers) {
-      if (peerId === excludePeerId) continue;
-      if (!peer.dataChannelReady) continue;
-      targets.push(peerId);
-    }
-    return targets;
-  }
-
-  private forwardRequest(hash: Uint8Array, targetPeerIds: string[], htl: number): number {
-    const hashKey = hashToKey(hash);
-    let forwarded = 0;
-
-    for (const peerId of targetPeerIds) {
-      const peer = this.peers.get(peerId);
-      if (!peer || !peer.dataChannelReady) continue;
-
-      // Set up pending request so we can process the response
-      const timeout = setTimeout(() => {
-        peer.pendingRequests.delete(hashKey);
-      }, this.requestTimeout);
-
-      peer.pendingRequests.set(hashKey, {
-        hash,
-        resolve: () => {
-          // Response will be pushed to original requester via pushToRequesters
-        },
-        timeout,
-      });
-
-      const req = createRequest(hash, htl);
-      const encoded = new Uint8Array(encodeRequest(req));
-      this.sendDataToPeer(peer, encoded);
-      forwarded++;
-    }
-    return forwarded;
-  }
-
-  private async pushToRequesters(hash: Uint8Array, data: Uint8Array, excludePeerId: string): Promise<void> {
-    const hashKey = hashToKey(hash);
-
-    for (const [peerId, peer] of this.peers) {
-      if (peerId === excludePeerId) continue;
-
-      const theirReq = peer.theirRequests.get(hashKey);
-      if (theirReq) {
-        peer.theirRequests.delete(hashKey);
-        peer.stats.forwardedResolved++;
-        await this.sendResponse(peer, hash, data);
-      }
-    }
-  }
-
-  private clearRequesterMarkers(hashKey: string, requesterIds: string[]): void {
-    for (const requesterId of requesterIds) {
-      this.peers.get(requesterId)?.theirRequests.delete(hashKey);
-    }
-  }
-
-  private startUpstreamFetch(hashKey: string, hash: Uint8Array): boolean {
-    if (!this.upstreamFetch || this.pendingUpstreamFetches.has(hashKey)) {
-      return Boolean(this.upstreamFetch);
+  private sendRequestToPeer(peer: WorkerPeer, hash: Uint8Array, htl: number): boolean {
+    if (!peer.dataChannelReady) {
+      return false;
     }
 
-    let pending: Promise<Uint8Array | null>;
-    pending = this.upstreamFetch(hash)
-      .then(async (data) => {
-        if (!data) return null;
-
-        const valid = await verifyHash(data, hash);
-        if (!valid) {
-          return null;
-        }
-
-        await this.localStore.put(hash, data).catch(() => false);
-        await this.pushToRequesters(hash, data, '');
-        this.forwardingMachine.resolveForward(hashKey);
-        return data;
-      })
-      .catch(() => null)
-      .finally(() => {
-        if (this.pendingUpstreamFetches.get(hashKey) === pending) {
-          this.pendingUpstreamFetches.delete(hashKey);
-        }
-      });
-
-    this.pendingUpstreamFetches.set(hashKey, pending);
+    const encoded = encodeForwardRequest(hash, htl);
+    this.sendDataToPeer(peer, encoded);
     return true;
   }
 

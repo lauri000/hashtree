@@ -1,5 +1,7 @@
 use super::*;
+use async_trait::async_trait;
 use hashtree_core::MemoryStore;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -11,6 +13,44 @@ struct TestNode {
     store: Arc<TestStore>,
     local_store: Arc<MemoryStore>,
     transport: Arc<crate::mock::MockRelayTransport>,
+}
+
+struct MockReadSource {
+    id: String,
+    store: Arc<MemoryStore>,
+    calls: Arc<AtomicUsize>,
+    delay: Duration,
+}
+
+impl MockReadSource {
+    fn new(
+        id: impl Into<String>,
+        store: Arc<MemoryStore>,
+        calls: Arc<AtomicUsize>,
+        delay: Duration,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            store,
+            calls,
+            delay,
+        }
+    }
+}
+
+#[async_trait]
+impl MeshReadSource for MockReadSource {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    async fn get(&self, hash: &Hash) -> Option<Vec<u8>> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        if !self.delay.is_zero() {
+            tokio::time::sleep(self.delay).await;
+        }
+        self.store.get(hash).await.ok().flatten()
+    }
 }
 
 fn mock_network_lock() -> &'static tokio::sync::Mutex<()> {
@@ -140,6 +180,34 @@ async fn run_get_with_pumps(
         if started.elapsed() > Duration::from_secs(1) {
             task.abort();
             return None;
+        }
+
+        pump_test_network(nodes, 4).await;
+    }
+}
+
+async fn run_two_gets_with_pumps(
+    requester_a: Arc<TestStore>,
+    requester_b: Arc<TestStore>,
+    hash: Hash,
+    nodes: &[&TestNode],
+) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+    let task_a = tokio::spawn(async move { requester_a.get(&hash).await.ok().flatten() });
+    let task_b = tokio::spawn(async move { requester_b.get(&hash).await.ok().flatten() });
+    let started = Instant::now();
+
+    loop {
+        if task_a.is_finished() && task_b.is_finished() {
+            return (
+                task_a.await.expect("request task a join"),
+                task_b.await.expect("request task b join"),
+            );
+        }
+
+        if started.elapsed() > Duration::from_secs(1) {
+            task_a.abort();
+            task_b.abort();
+            return (None, None);
         }
 
         pump_test_network(nodes, 4).await;
@@ -678,4 +746,182 @@ async fn test_tit_for_tat_store_path_recovers_after_bad_peer_observation() {
             tit_for_tat_successes >= 5,
             "expected tit-for-tat path to recover after the first consistently bad peer observation (successes={tit_for_tat_successes})"
         );
+}
+
+#[tokio::test]
+async fn test_read_sources_prefer_previously_successful_source() {
+    let local_store = Arc::new(MemoryStore::new());
+    let store = make_test_store_with_routing(
+        local_store,
+        "source-pref",
+        MeshRoutingConfig {
+            dispatch: RequestDispatchConfig {
+                initial_fanout: 1,
+                hedge_fanout: 1,
+                max_fanout: 2,
+                hedge_interval_ms: 5,
+            },
+            ..Default::default()
+        },
+    );
+
+    let good_store = Arc::new(MemoryStore::new());
+    let bad_store = Arc::new(MemoryStore::new());
+    let good_calls = Arc::new(AtomicUsize::new(0));
+    let bad_calls = Arc::new(AtomicUsize::new(0));
+
+    let payload_a = b"source-a".to_vec();
+    let payload_b = b"source-b".to_vec();
+    let hash_a = hashtree_core::sha256(&payload_a);
+    let hash_b = hashtree_core::sha256(&payload_b);
+    good_store
+        .put(hash_a, payload_a.clone())
+        .await
+        .expect("put a");
+    good_store
+        .put(hash_b, payload_b.clone())
+        .await
+        .expect("put b");
+
+    store
+        .set_read_sources(vec![
+            Arc::new(MockReadSource::new(
+                "bad",
+                bad_store,
+                bad_calls.clone(),
+                Duration::ZERO,
+            )) as Arc<dyn MeshReadSource>,
+            Arc::new(MockReadSource::new(
+                "good",
+                good_store,
+                good_calls.clone(),
+                Duration::ZERO,
+            )) as Arc<dyn MeshReadSource>,
+        ])
+        .await;
+
+    let first = store.get(&hash_a).await.expect("first get");
+    assert_eq!(first, Some(payload_a));
+    assert_eq!(bad_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(good_calls.load(Ordering::Relaxed), 1);
+
+    let second = store.get(&hash_b).await.expect("second get");
+    assert_eq!(second, Some(payload_b));
+    assert_eq!(
+        good_calls.load(Ordering::Relaxed),
+        2,
+        "successful source should be preferred on the next lookup",
+    );
+    assert_eq!(
+        bad_calls.load(Ordering::Relaxed),
+        1,
+        "miss-heavy source should not be probed again immediately",
+    );
+}
+
+#[tokio::test]
+async fn test_forwarded_request_can_be_served_from_read_source() {
+    let _guard = mock_network_lock().lock().await;
+    crate::mock::clear_channel_registry().await;
+
+    let relay = crate::mock::MockRelay::new();
+    let requester = make_shared_test_node(
+        relay.clone(),
+        "requester-upstream",
+        MeshRoutingConfig::default(),
+    );
+    let gateway = make_shared_test_node(relay, "gateway-upstream", MeshRoutingConfig::default());
+    let nodes = [&requester, &gateway];
+
+    requester.transport.connect(&[]).await.expect("connect");
+    gateway.transport.connect(&[]).await.expect("connect");
+    requester.store.start().await.expect("start");
+    gateway.store.start().await.expect("start");
+    pump_test_network(&nodes, 24).await;
+
+    let payload = b"gateway-upstream-data".to_vec();
+    let hash = hashtree_core::sha256(&payload);
+    let upstream_store = Arc::new(MemoryStore::new());
+    upstream_store
+        .put(hash, payload.clone())
+        .await
+        .expect("put upstream");
+    let calls = Arc::new(AtomicUsize::new(0));
+    gateway
+        .store
+        .set_read_sources(vec![Arc::new(MockReadSource::new(
+            "upstream",
+            upstream_store,
+            calls.clone(),
+            Duration::from_millis(10),
+        )) as Arc<dyn MeshReadSource>])
+        .await;
+
+    let result = run_get_with_pumps(requester.store.clone(), hash, &nodes).await;
+    assert_eq!(result, Some(payload.clone()));
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        gateway
+            .local_store
+            .get(&hash)
+            .await
+            .expect("gateway local lookup"),
+        Some(payload),
+    );
+
+    crate::mock::clear_channel_registry().await;
+}
+
+#[tokio::test]
+async fn test_forwarded_upstream_fetch_is_shared_across_multiple_requesters() {
+    let _guard = mock_network_lock().lock().await;
+    crate::mock::clear_channel_registry().await;
+
+    let relay = crate::mock::MockRelay::new();
+    let gateway = make_shared_test_node(relay.clone(), "a-gateway", MeshRoutingConfig::default());
+    let requester_a =
+        make_shared_test_node(relay.clone(), "b-requester", MeshRoutingConfig::default());
+    let requester_b = make_shared_test_node(relay, "c-requester", MeshRoutingConfig::default());
+    let nodes = [&gateway, &requester_a, &requester_b];
+
+    for node in &nodes {
+        node.transport.connect(&[]).await.expect("connect");
+        node.store.start().await.expect("start");
+    }
+    pump_test_network(&nodes, 24).await;
+
+    let payload = b"shared-upstream-fetch".to_vec();
+    let hash = hashtree_core::sha256(&payload);
+    let upstream_store = Arc::new(MemoryStore::new());
+    upstream_store
+        .put(hash, payload.clone())
+        .await
+        .expect("put upstream");
+    let calls = Arc::new(AtomicUsize::new(0));
+    gateway
+        .store
+        .set_read_sources(vec![Arc::new(MockReadSource::new(
+            "upstream",
+            upstream_store,
+            calls.clone(),
+            Duration::from_millis(25),
+        )) as Arc<dyn MeshReadSource>])
+        .await;
+
+    let (result_a, result_b) = run_two_gets_with_pumps(
+        requester_a.store.clone(),
+        requester_b.store.clone(),
+        hash,
+        &nodes,
+    )
+    .await;
+    assert_eq!(result_a, Some(payload.clone()));
+    assert_eq!(result_b, Some(payload));
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "gateway should coalesce concurrent upstream reads for the same hash",
+    );
+
+    crate::mock::clear_channel_registry().await;
 }

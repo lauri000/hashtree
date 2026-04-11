@@ -5,6 +5,7 @@
 //! (Nostr websockets + WebRTC) and simulation (mocks) use this same code.
 
 use async_trait::async_trait;
+use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -44,6 +45,17 @@ struct PendingQuoteRequest {
     offered_payment_sat: u64,
 }
 
+#[async_trait]
+pub trait MeshReadSource: Send + Sync {
+    fn id(&self) -> &str;
+
+    fn is_available(&self) -> bool {
+        true
+    }
+
+    async fn get(&self, hash: &Hash) -> Option<Vec<u8>>;
+}
+
 #[derive(Debug, Clone)]
 struct NegotiatedQuote {
     peer_id: String,
@@ -58,6 +70,114 @@ struct IssuedQuote {
     payment_sat: u64,
     #[allow(dead_code)]
     mint_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AdaptiveSourceStats {
+    requests: u64,
+    successes: u64,
+    misses: u64,
+    failures: u64,
+    timeouts: u64,
+    srtt_ms: f64,
+    rttvar_ms: f64,
+    backoff_level: u32,
+    backed_off_until: Option<Instant>,
+    last_success_at: Option<Instant>,
+    last_failure_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone)]
+struct SourceFetchResult {
+    data: Vec<u8>,
+}
+
+struct InflightSourceFetch {
+    waiters: Vec<oneshot::Sender<Option<SourceFetchResult>>>,
+}
+
+enum SourceFetchOutcome {
+    Hit {
+        source_id: String,
+        data: Vec<u8>,
+        elapsed_ms: u64,
+    },
+    Miss {
+        source_id: String,
+    },
+    Failure {
+        source_id: String,
+    },
+}
+
+const INITIAL_SOURCE_BACKOFF_MS: u64 = 250;
+const MAX_SOURCE_BACKOFF_MS: u64 = 10_000;
+const SOURCE_SCORE_TIE_DELTA: f64 = 0.15;
+const RECENT_SOURCE_SUCCESS_WINDOW: Duration = Duration::from_secs(60);
+
+fn source_reliability_score(stats: &AdaptiveSourceStats) -> f64 {
+    (stats.successes as f64 + 1.0) / (stats.requests as f64 + 2.0)
+}
+
+fn source_latency_score(stats: &AdaptiveSourceStats) -> f64 {
+    if stats.srtt_ms <= 0.0 {
+        return 0.5;
+    }
+    (500.0 / (stats.srtt_ms + 50.0)).min(1.0)
+}
+
+fn source_has_history(stats: &AdaptiveSourceStats) -> bool {
+    stats.requests > 0
+        || stats.successes > 0
+        || stats.misses > 0
+        || stats.failures > 0
+        || stats.timeouts > 0
+}
+
+fn adaptive_source_score(stats: &AdaptiveSourceStats, now: Instant) -> f64 {
+    if let Some(backed_off_until) = stats.backed_off_until {
+        if backed_off_until > now {
+            return f64::NEG_INFINITY;
+        }
+    }
+
+    let miss_penalty = if stats.requests > 0 {
+        (stats.misses as f64 / stats.requests as f64) * 0.15
+    } else {
+        0.0
+    };
+    let failure_penalty = if stats.requests > 0 {
+        ((stats.failures + stats.timeouts) as f64 / stats.requests as f64) * 0.3
+    } else {
+        0.0
+    };
+    let recency_bonus = if stats
+        .last_success_at
+        .is_some_and(|last| now.duration_since(last) < RECENT_SOURCE_SUCCESS_WINDOW)
+    {
+        0.1
+    } else {
+        0.0
+    };
+
+    0.6 * source_reliability_score(stats) + 0.3 * source_latency_score(stats) + recency_bonus
+        - miss_penalty
+        - failure_penalty
+}
+
+#[derive(Clone)]
+enum ReadRoute {
+    Peers(Vec<String>),
+    Sources,
+}
+
+impl ReadRoute {
+    fn id(&self) -> &'static str {
+        match self {
+            Self::Peers(_) => "peers",
+            Self::Sources => "sources",
+        }
+    }
 }
 
 /// Aggregate stats from draining currently available peer-link messages.
@@ -347,6 +467,14 @@ where
     issued_quotes: RwLock<HashMap<(String, String, u64), IssuedQuote>>,
     /// Monotonic quote identifier generator.
     next_quote_id: RwLock<u64>,
+    /// Non-peer read sources such as upstream Blossom servers.
+    read_sources: RwLock<HashMap<String, Arc<dyn MeshReadSource>>>,
+    /// Adaptive health stats for non-peer read sources.
+    read_source_stats: RwLock<HashMap<String, AdaptiveSourceStats>>,
+    /// Shared in-flight upstream reads keyed by hash.
+    inflight_source_fetches: Mutex<HashMap<String, InflightSourceFetch>>,
+    /// Adaptive route stats for choosing peers vs upstream sources.
+    read_route_stats: RwLock<HashMap<String, AdaptiveSourceStats>>,
     /// Adaptive selector for peer ordering.
     peer_selector: RwLock<PeerSelector>,
     /// Routing/dispatch configuration.
@@ -400,6 +528,10 @@ where
             pending_quotes: RwLock::new(HashMap::new()),
             issued_quotes: RwLock::new(HashMap::new()),
             next_quote_id: RwLock::new(1),
+            read_sources: RwLock::new(HashMap::new()),
+            read_source_stats: RwLock::new(HashMap::new()),
+            inflight_source_fetches: Mutex::new(HashMap::new()),
+            read_route_stats: RwLock::new(HashMap::new()),
             peer_selector: RwLock::new(selector),
             routing,
             request_timeout,
@@ -732,6 +864,208 @@ where
         }
     }
 
+    pub async fn set_read_sources(&self, sources: Vec<Arc<dyn MeshReadSource>>) {
+        let mut by_id = HashMap::new();
+        let mut stats = self.read_source_stats.write().await;
+        for source in sources {
+            let source_id = source.id().to_string();
+            by_id.insert(source_id.clone(), source);
+            stats
+                .entry(source_id)
+                .or_insert_with(AdaptiveSourceStats::default);
+        }
+        *self.read_sources.write().await = by_id;
+    }
+
+    fn route_stats_for<'a>(
+        stats: &'a mut HashMap<String, AdaptiveSourceStats>,
+        route_id: &str,
+    ) -> &'a mut AdaptiveSourceStats {
+        stats
+            .entry(route_id.to_string())
+            .or_insert_with(AdaptiveSourceStats::default)
+    }
+
+    async fn record_route_request(&self, route_id: &str) {
+        let mut stats = self.read_route_stats.write().await;
+        Self::route_stats_for(&mut stats, route_id).requests += 1;
+    }
+
+    async fn record_route_success(&self, route_id: &str, elapsed_ms: u64) {
+        let now = Instant::now();
+        let mut stats = self.read_route_stats.write().await;
+        let stats = Self::route_stats_for(&mut stats, route_id);
+        stats.successes += 1;
+        stats.last_success_at = Some(now);
+        stats.backoff_level = 0;
+        stats.backed_off_until = None;
+        if stats.srtt_ms <= 0.0 {
+            stats.srtt_ms = elapsed_ms as f64;
+            stats.rttvar_ms = elapsed_ms as f64 / 2.0;
+            return;
+        }
+        let elapsed = elapsed_ms as f64;
+        stats.rttvar_ms = 0.75 * stats.rttvar_ms + 0.25 * (stats.srtt_ms - elapsed).abs();
+        stats.srtt_ms = 0.875 * stats.srtt_ms + 0.125 * elapsed;
+    }
+
+    async fn record_route_miss(&self, route_id: &str) {
+        let mut stats = self.read_route_stats.write().await;
+        Self::route_stats_for(&mut stats, route_id).misses += 1;
+    }
+
+    async fn record_read_source_request(&self, source_id: &str) {
+        let mut stats = self.read_source_stats.write().await;
+        stats
+            .entry(source_id.to_string())
+            .or_insert_with(AdaptiveSourceStats::default)
+            .requests += 1;
+    }
+
+    async fn record_read_source_miss(&self, source_id: &str) {
+        let mut stats = self.read_source_stats.write().await;
+        stats
+            .entry(source_id.to_string())
+            .or_insert_with(AdaptiveSourceStats::default)
+            .misses += 1;
+    }
+
+    async fn record_read_source_success(&self, source_id: &str, elapsed_ms: u64) {
+        let now = Instant::now();
+        let mut stats = self.read_source_stats.write().await;
+        let stats = stats
+            .entry(source_id.to_string())
+            .or_insert_with(AdaptiveSourceStats::default);
+        stats.successes += 1;
+        stats.last_success_at = Some(now);
+        stats.backoff_level = 0;
+        stats.backed_off_until = None;
+        if stats.srtt_ms <= 0.0 {
+            stats.srtt_ms = elapsed_ms as f64;
+            stats.rttvar_ms = elapsed_ms as f64 / 2.0;
+            return;
+        }
+        let elapsed = elapsed_ms as f64;
+        stats.rttvar_ms = 0.75 * stats.rttvar_ms + 0.25 * (stats.srtt_ms - elapsed).abs();
+        stats.srtt_ms = 0.875 * stats.srtt_ms + 0.125 * elapsed;
+    }
+
+    async fn record_read_source_failure(&self, source_id: &str) {
+        let now = Instant::now();
+        let mut stats = self.read_source_stats.write().await;
+        let stats = stats
+            .entry(source_id.to_string())
+            .or_insert_with(AdaptiveSourceStats::default);
+        stats.failures += 1;
+        stats.last_failure_at = Some(now);
+        Self::apply_source_backoff(stats, now);
+    }
+
+    async fn record_read_source_timeout(&self, source_id: &str) {
+        let now = Instant::now();
+        let mut stats = self.read_source_stats.write().await;
+        let stats = stats
+            .entry(source_id.to_string())
+            .or_insert_with(AdaptiveSourceStats::default);
+        stats.timeouts += 1;
+        stats.last_failure_at = Some(now);
+        Self::apply_source_backoff(stats, now);
+    }
+
+    fn apply_source_backoff(stats: &mut AdaptiveSourceStats, now: Instant) {
+        stats.backoff_level = stats.backoff_level.saturating_add(1);
+        let backoff_ms = (INITIAL_SOURCE_BACKOFF_MS
+            .saturating_mul(2u64.saturating_pow(stats.backoff_level.saturating_sub(1))))
+        .min(MAX_SOURCE_BACKOFF_MS);
+        stats.backed_off_until = Some(now + Duration::from_millis(backoff_ms));
+    }
+
+    async fn ordered_read_sources(&self) -> Vec<Arc<dyn MeshReadSource>> {
+        let sources = self.read_sources.read().await;
+        if sources.is_empty() {
+            return Vec::new();
+        }
+
+        let mut available: Vec<Arc<dyn MeshReadSource>> = sources
+            .values()
+            .filter(|source| source.is_available())
+            .cloned()
+            .collect();
+        if available.is_empty() {
+            return Vec::new();
+        }
+
+        let now = Instant::now();
+        let stats = self.read_source_stats.read().await;
+        let mut healthy: Vec<Arc<dyn MeshReadSource>> = available
+            .iter()
+            .filter(|source| {
+                stats
+                    .get(source.id())
+                    .and_then(|s| s.backed_off_until)
+                    .is_none_or(|until| until <= now)
+            })
+            .cloned()
+            .collect();
+        if !healthy.is_empty() {
+            available = std::mem::take(&mut healthy);
+        }
+
+        available.sort_by(|left, right| {
+            let left_stats = stats.get(left.id()).cloned().unwrap_or_default();
+            let right_stats = stats.get(right.id()).cloned().unwrap_or_default();
+            adaptive_source_score(&right_stats, now)
+                .partial_cmp(&adaptive_source_score(&left_stats, now))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.id().cmp(right.id()))
+        });
+        available
+    }
+
+    async fn should_probe_multiple_read_sources(
+        &self,
+        ordered_sources: &[Arc<dyn MeshReadSource>],
+    ) -> bool {
+        if ordered_sources.len() <= 1 {
+            return false;
+        }
+        let stats = self.read_source_stats.read().await;
+        let best = stats
+            .get(ordered_sources[0].id())
+            .cloned()
+            .unwrap_or_default();
+        let second = stats
+            .get(ordered_sources[1].id())
+            .cloned()
+            .unwrap_or_default();
+        if !source_has_history(&best) || !source_has_history(&second) {
+            return true;
+        }
+        let now = Instant::now();
+        adaptive_source_score(&best, now) - adaptive_source_score(&second, now)
+            < SOURCE_SCORE_TIE_DELTA
+    }
+
+    async fn source_dispatch_for(&self, source_count: usize) -> RequestDispatchConfig {
+        if source_count == 0 {
+            return self.routing.dispatch;
+        }
+        let ordered_sources = self.ordered_read_sources().await;
+        let probe_multiple = self
+            .should_probe_multiple_read_sources(&ordered_sources)
+            .await;
+        RequestDispatchConfig {
+            initial_fanout: if probe_multiple {
+                source_count.min(2)
+            } else {
+                1
+            },
+            hedge_fanout: self.routing.dispatch.hedge_fanout,
+            max_fanout: self.routing.dispatch.max_fanout.min(source_count),
+            hedge_interval_ms: self.routing.dispatch.hedge_interval_ms,
+        }
+    }
+
     /// Get peer count
     pub async fn peer_count(&self) -> usize {
         self.signaling.peer_count().await
@@ -913,8 +1247,7 @@ where
             }
         }
 
-        self.request_from_ordered_peers(hash, &ordered_peer_ids)
-            .await
+        self.request_from_mesh(hash).await
     }
 
     async fn request_quote_from_peers(
@@ -1097,14 +1430,248 @@ where
         Some(data)
     }
 
-    /// Request data from peers
-    async fn request_from_peers(&self, hash: &Hash) -> Option<Vec<u8>> {
-        let ordered_peer_ids = self.ordered_connected_peers().await;
-        if ordered_peer_ids.is_empty() {
+    async fn request_from_read_sources_inner(&self, hash: &Hash) -> Option<SourceFetchResult> {
+        let ordered_sources = self.ordered_read_sources().await;
+        if ordered_sources.is_empty() {
             return None;
         }
-        self.request_from_ordered_peers(hash, &ordered_peer_ids)
+
+        let dispatch = normalize_dispatch_config(
+            self.source_dispatch_for(ordered_sources.len()).await,
+            ordered_sources.len(),
+        );
+        let wave_plan = build_hedged_wave_plan(ordered_sources.len(), dispatch);
+        if wave_plan.is_empty() {
+            return None;
+        }
+
+        let deadline = Instant::now() + self.request_timeout;
+        let mut pending = FuturesUnordered::new();
+        let mut pending_source_ids = HashSet::new();
+        let mut next_source_idx = 0usize;
+
+        for (wave_idx, wave_size) in wave_plan.iter().copied().enumerate() {
+            let from = next_source_idx;
+            let to = (next_source_idx + wave_size).min(ordered_sources.len());
+            next_source_idx = to;
+
+            for source in ordered_sources[from..to].iter().cloned() {
+                let source_id = source.id().to_string();
+                self.record_read_source_request(&source_id).await;
+                pending_source_ids.insert(source_id.clone());
+                let hash = *hash;
+                pending.push(tokio::spawn(async move {
+                    let started_at = Instant::now();
+                    let result = std::panic::AssertUnwindSafe(source.get(&hash))
+                        .catch_unwind()
+                        .await;
+                    match result {
+                        Ok(Some(data)) => SourceFetchOutcome::Hit {
+                            source_id,
+                            data,
+                            elapsed_ms: started_at.elapsed().as_millis().max(1) as u64,
+                        },
+                        Ok(None) => SourceFetchOutcome::Miss { source_id },
+                        Err(_) => SourceFetchOutcome::Failure { source_id },
+                    }
+                }));
+            }
+
+            let is_last_wave =
+                wave_idx + 1 == wave_plan.len() || next_source_idx >= ordered_sources.len();
+            let window_end = if is_last_wave {
+                deadline
+            } else {
+                (Instant::now() + Duration::from_millis(dispatch.hedge_interval_ms)).min(deadline)
+            };
+
+            while Instant::now() < window_end {
+                let remaining = window_end.saturating_duration_since(Instant::now());
+                let Some(result) = tokio::time::timeout(remaining, pending.next())
+                    .await
+                    .ok()
+                    .flatten()
+                else {
+                    break;
+                };
+                let Ok(outcome) = result else {
+                    continue;
+                };
+                match outcome {
+                    SourceFetchOutcome::Hit {
+                        source_id,
+                        data,
+                        elapsed_ms,
+                    } => {
+                        pending_source_ids.remove(&source_id);
+                        self.record_read_source_success(&source_id, elapsed_ms)
+                            .await;
+                        return Some(SourceFetchResult { data });
+                    }
+                    SourceFetchOutcome::Miss { source_id } => {
+                        pending_source_ids.remove(&source_id);
+                        self.record_read_source_miss(&source_id).await;
+                    }
+                    SourceFetchOutcome::Failure { source_id } => {
+                        pending_source_ids.remove(&source_id);
+                        self.record_read_source_failure(&source_id).await;
+                    }
+                }
+            }
+
+            if Instant::now() >= deadline {
+                break;
+            }
+        }
+
+        for source_id in pending_source_ids {
+            self.record_read_source_timeout(&source_id).await;
+        }
+        None
+    }
+
+    async fn request_from_read_sources(&self, hash: &Hash) -> Option<Vec<u8>> {
+        let hash_key = hash_to_key(hash);
+        let existing_wait = {
+            let mut inflight = self.inflight_source_fetches.lock().await;
+            if let Some(existing) = inflight.get_mut(&hash_key) {
+                let (tx, rx) = oneshot::channel();
+                existing.waiters.push(tx);
+                Some(rx)
+            } else {
+                inflight.insert(
+                    hash_key.clone(),
+                    InflightSourceFetch {
+                        waiters: Vec::new(),
+                    },
+                );
+                None
+            }
+        };
+
+        if let Some(wait) = existing_wait {
+            return wait.await.ok().flatten().map(|result| result.data);
+        }
+
+        let result = self.request_from_read_sources_inner(hash).await;
+        if let Some(hit) = result.as_ref() {
+            let _ = self.local_store.put(*hash, hit.data.clone()).await;
+        }
+
+        let waiters = self
+            .inflight_source_fetches
+            .lock()
             .await
+            .remove(&hash_key)
+            .map(|inflight| inflight.waiters)
+            .unwrap_or_default();
+        for waiter in waiters {
+            let _ = waiter.send(result.clone());
+        }
+
+        result.map(|hit| hit.data)
+    }
+
+    async fn available_read_routes(&self) -> Vec<ReadRoute> {
+        let mut routes = Vec::new();
+        let ordered_peers = self.ordered_connected_peers().await;
+        if !ordered_peers.is_empty() {
+            routes.push(ReadRoute::Peers(ordered_peers));
+        }
+        if !self.ordered_read_sources().await.is_empty() {
+            routes.push(ReadRoute::Sources);
+        }
+        if routes.len() <= 1 {
+            return routes;
+        }
+
+        let now = Instant::now();
+        let stats = self.read_route_stats.read().await;
+        routes.sort_by(|left, right| {
+            let left_stats = stats.get(left.id()).cloned().unwrap_or_default();
+            let right_stats = stats.get(right.id()).cloned().unwrap_or_default();
+            adaptive_source_score(&right_stats, now)
+                .partial_cmp(&adaptive_source_score(&left_stats, now))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.id().cmp(right.id()))
+        });
+        routes
+    }
+
+    async fn should_probe_multiple_routes(&self, routes: &[ReadRoute]) -> bool {
+        if routes.len() <= 1 {
+            return false;
+        }
+        let stats = self.read_route_stats.read().await;
+        let best = stats.get(routes[0].id()).cloned().unwrap_or_default();
+        let second = stats.get(routes[1].id()).cloned().unwrap_or_default();
+        if !source_has_history(&best) || !source_has_history(&second) {
+            return true;
+        }
+        let now = Instant::now();
+        adaptive_source_score(&best, now) - adaptive_source_score(&second, now)
+            < SOURCE_SCORE_TIE_DELTA
+    }
+
+    async fn run_read_route(&self, hash: &Hash, route: &ReadRoute) -> Option<Vec<u8>> {
+        let route_id = route.id();
+        self.record_route_request(route_id).await;
+        let started_at = Instant::now();
+        let result = match route {
+            ReadRoute::Peers(peer_ids) => self.request_from_ordered_peers(hash, peer_ids).await,
+            ReadRoute::Sources => self.request_from_read_sources(hash).await,
+        };
+        if result.is_some() {
+            self.record_route_success(route_id, started_at.elapsed().as_millis().max(1) as u64)
+                .await;
+        } else {
+            self.record_route_miss(route_id).await;
+        }
+        result
+    }
+
+    async fn request_from_mesh(&self, hash: &Hash) -> Option<Vec<u8>> {
+        let routes = self.available_read_routes().await;
+        match routes.as_slice() {
+            [] => None,
+            [route] => self.run_read_route(hash, route).await,
+            [first, second, ..] => {
+                if self.should_probe_multiple_routes(&routes).await {
+                    let first_fut = self.run_read_route(hash, first);
+                    let second_fut = self.run_read_route(hash, second);
+                    tokio::pin!(first_fut);
+                    tokio::pin!(second_fut);
+                    let mut first_done = false;
+                    let mut second_done = false;
+                    loop {
+                        tokio::select! {
+                            result = &mut first_fut, if !first_done => {
+                                first_done = true;
+                                if result.is_some() {
+                                    return result;
+                                }
+                            }
+                            result = &mut second_fut, if !second_done => {
+                                second_done = true;
+                                if result.is_some() {
+                                    return result;
+                                }
+                            }
+                            else => break,
+                        }
+                        if first_done && second_done {
+                            break;
+                        }
+                    }
+                    None
+                } else {
+                    if let Some(data) = self.run_read_route(hash, first).await {
+                        return Some(data);
+                    }
+                    self.run_read_route(hash, second).await
+                }
+            }
+        }
     }
 
     async fn complete_pending_response(&self, from_peer: &str, hash_key: String, payload: Vec<u8>) {
@@ -1282,8 +1849,16 @@ where
             if let Some(channel) = self.signaling.get_channel(from_peer).await {
                 let _ = channel.send(response_bytes).await;
             }
+            return;
         }
-        // For now, don't forward - keep it simple
+
+        if let Some(data) = self.request_from_read_sources(&hash).await {
+            let res = create_response(&hash, data);
+            let response_bytes = encode_response(&res);
+            if let Some(channel) = self.signaling.get_channel(from_peer).await {
+                let _ = channel.send(response_bytes).await;
+            }
+        }
     }
 
     /// Handle incoming data message
@@ -1329,7 +1904,7 @@ where
         }
 
         // Try peers
-        Ok(self.request_from_peers(hash).await)
+        Ok(self.request_from_mesh(hash).await)
     }
 
     async fn has(&self, hash: &Hash) -> Result<bool, StoreError> {

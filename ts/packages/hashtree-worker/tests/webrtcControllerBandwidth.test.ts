@@ -18,7 +18,7 @@ interface ControllerPrivateApi {
     direction: 'inbound' | 'outbound'
   ) => ControllerPeer;
   onDataChannelMessage: (peerId: string, data: Uint8Array) => Promise<void>;
-  forwardRequest: (hash: Uint8Array, targetPeerIds: string[], htl: number) => number;
+  sendRequestToPeer: (peer: ControllerPeer, hash: Uint8Array, htl: number) => boolean;
   sendResponse: (peer: ControllerPeer, hash: Uint8Array, data: Uint8Array) => Promise<void>;
 }
 
@@ -83,7 +83,7 @@ describe('WebRTCController bandwidth stats', () => {
     const { controller, peer, sentDataPayloads, internal } = createConnectedController(localStore);
 
     const hash = new Uint8Array(32).fill(9);
-    internal.forwardRequest(hash, [peer.peerId], 2);
+    expect(internal.sendRequestToPeer(peer, hash, 2)).toBe(true);
     await internal.sendResponse(peer, hash, new Uint8Array([10, 11, 12, 13]));
 
     expect(sentDataPayloads).toHaveLength(2);

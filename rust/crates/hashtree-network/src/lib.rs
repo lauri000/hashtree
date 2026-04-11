@@ -88,8 +88,8 @@ pub use mesh_session::{
 };
 pub use mesh_store_core::{
     build_hedged_wave_plan, normalize_dispatch_config, run_hedged_waves, sync_selector_peers,
-    DataPumpStats, HedgedWaveAction, MeshRoutingConfig, MeshStoreCore, ProductionMeshStore,
-    RequestDispatchConfig, ResponseBehaviorConfig, SimMeshStore,
+    DataPumpStats, HedgedWaveAction, MeshReadSource, MeshRoutingConfig, MeshStoreCore,
+    ProductionMeshStore, RequestDispatchConfig, ResponseBehaviorConfig, SimMeshStore,
 };
 pub use mock::{
     clear_channel_registry, MockConnectionFactory, MockDataChannel, MockLatencyMode, MockRelay,

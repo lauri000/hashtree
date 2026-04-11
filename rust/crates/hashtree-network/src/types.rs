@@ -474,6 +474,8 @@ pub struct MeshStoreConfig {
     pub request_fairness_enabled: bool,
     /// Hedged request dispatch policy for retrieval.
     pub request_dispatch: RequestDispatchConfig,
+    /// Upstream Blossom servers used as adaptive fallback read sources.
+    pub upstream_blossom_servers: Vec<String>,
 }
 
 impl Default for MeshStoreConfig {
@@ -497,6 +499,7 @@ impl Default for MeshStoreConfig {
                 max_fanout: 8,
                 hedge_interval_ms: 120,
             },
+            upstream_blossom_servers: Vec::new(),
         }
     }
 }

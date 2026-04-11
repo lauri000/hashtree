@@ -13,6 +13,7 @@ keywords = ["merkle", "webrtc", "p2p", "nostr", "hashtree"]
 anyhow.workspace = true
 cashu-service = { workspace = true, default-features = false }
 hashtree-core.workspace = true
+hashtree-blossom.workspace = true
 webrtc.workspace = true
 nostr-sdk.workspace = true
 tokio.workspace = true

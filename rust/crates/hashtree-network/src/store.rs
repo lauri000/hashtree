@@ -9,10 +9,11 @@
 
 use crate::types::{MeshStats, MeshStoreConfig, PeerId};
 use crate::{
-    MeshRouter, MeshRoutingConfig, NostrRelayTransport, ProductionMeshStore, SelectorSummary,
-    SignalingTransport, WebRtcPeerLinkFactory,
+    MeshReadSource, MeshRouter, MeshRoutingConfig, NostrRelayTransport, ProductionMeshStore,
+    SelectorSummary, SignalingTransport, WebRtcPeerLinkFactory,
 };
 use async_trait::async_trait;
+use hashtree_blossom::BlossomClient;
 use hashtree_core::{Hash, Store, StoreError};
 use nostr_sdk::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -21,6 +22,22 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
+
+struct BlossomReadSource {
+    id: String,
+    client: BlossomClient,
+}
+
+#[async_trait]
+impl MeshReadSource for BlossomReadSource {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    async fn get(&self, hash: &Hash) -> Option<Vec<u8>> {
+        self.client.download(&hex::encode(hash)).await.ok()
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum MeshStoreError {
@@ -97,7 +114,7 @@ impl<S: Store + Send + Sync + 'static> MeshStore<S> {
         }
 
         let peer_id = PeerId::new(keys.public_key().to_hex()).to_string();
-        let transport = Arc::new(NostrRelayTransport::new(keys, self.config.debug));
+        let transport = Arc::new(NostrRelayTransport::new(keys.clone(), self.config.debug));
         transport
             .connect(&self.config.relays)
             .await
@@ -122,6 +139,23 @@ impl<S: Store + Send + Sync + 'static> MeshStore<S> {
             self.config.debug,
             self.routing_config(),
         ));
+        if !self.config.upstream_blossom_servers.is_empty() {
+            let timeout = Duration::from_millis(self.config.request_timeout_ms);
+            let sources: Vec<Arc<dyn MeshReadSource>> = self
+                .config
+                .upstream_blossom_servers
+                .iter()
+                .map(|server| {
+                    Arc::new(BlossomReadSource {
+                        id: format!("blossom:{server}"),
+                        client: BlossomClient::new_empty(keys.clone())
+                            .with_timeout(timeout)
+                            .with_read_servers(vec![server.clone()]),
+                    }) as Arc<dyn MeshReadSource>
+                })
+                .collect();
+            store.set_read_sources(sources).await;
+        }
         store
             .start()
             .await

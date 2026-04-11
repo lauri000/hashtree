@@ -4,6 +4,13 @@ export {
 } from './webrtcController.js';
 
 export {
+  MeshQueryRouter,
+  encodeForwardRequest,
+  type MeshQueryRouterConfig,
+  type MeshQueryRouterPeer,
+} from './meshQueryRouter.js';
+
+export {
   QueryForwardingMachine,
   type QueryForwardingMachineConfig,
   type ForwardDecision,
