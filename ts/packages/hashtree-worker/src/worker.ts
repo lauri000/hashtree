@@ -3,6 +3,7 @@
 import {
   HashTree,
   decryptChk,
+  fromHex,
   nhashDecode,
   nhashEncode,
   toHex,
@@ -25,6 +26,7 @@ import type {
 import { IdbBlobStorage } from './capabilities/idbStorage.js';
 import { BlossomTransport, DEFAULT_BLOSSOM_SERVERS } from './capabilities/blossomTransport.js';
 import { probeConnectivity } from './capabilities/connectivity.js';
+import { MeshRouterStore } from './capabilities/meshRouterStore.js';
 import { resolveRootPathFromRelays, watchRootPathFromRelays } from './capabilities/rootResolver.js';
 import { assertEncryptedUploadCid, markEncryptedHashes, shouldServeHashToPeer } from './privacyGuards.js';
 import { streamFileRangeChunks } from './mediaStreaming.js';
@@ -46,6 +48,7 @@ let endpointListener: EventListener | null = null;
 
 let storage: IdbBlobStorage | null = null;
 let blossom: BlossomTransport | null = null;
+let meshStore: MeshRouterStore | null = null;
 let tree: HashTree | null = null;
 let nostrRelays: string[] = [];
 let probeInterval: ReturnType<typeof setInterval> | null = null;
@@ -193,6 +196,7 @@ function resetState(): void {
   storage?.close();
   storage = null;
   blossom = null;
+  meshStore = null;
   tree = null;
   for (const pending of pendingP2PFetches.values()) {
     clearTimeout(pending.timeoutId);
@@ -270,34 +274,19 @@ function resolveP2PFetch(requestId: string, data?: Uint8Array, error?: string): 
 }
 
 async function loadBlobData(hashHex: string): Promise<{ data: Uint8Array; source: BlobSource } | null> {
-  if (!storage) return null;
-  const cached = await storage.get(hashHex);
-  if (cached) {
-    return { data: cached, source: 'idb' };
-  }
-  if (blossom) {
-    const fetched = await blossom.fetch(hashHex);
-    if (fetched) {
-      void storage.putByHashTrusted(hashHex, fetched).catch(() => undefined);
-      return { data: fetched, source: 'blossom' };
-    }
-  }
+  if (!meshStore) return null;
+  const result = await meshStore.getDetailed(fromHex(hashHex) as Hash);
+  if (!result) return null;
 
-  const p2pData = await requestP2PBlob(hashHex);
-  if (!p2pData) {
-    return null;
-  }
-
-  try {
-    await storage.putByHash(hashHex, p2pData);
-  } catch {
-    return null;
-  }
-
-  return { data: p2pData, source: 'p2p' };
+  const source: BlobSource = result.sourceId === 'idb'
+    ? 'idb'
+    : result.sourceId === 'blossom'
+      ? 'blossom'
+      : 'p2p';
+  return { data: result.data, source };
 }
 
-function createWorkerStore(): Store {
+function createStorageStore(): Store {
   return {
     put: async (hash: Hash, data: Uint8Array): Promise<boolean> => {
       if (!storage) throw new Error('Worker storage not initialized');
@@ -317,6 +306,25 @@ function createWorkerStore(): Store {
       return storage.delete(toHex(hash));
     },
   };
+}
+
+function createMeshStore(): MeshRouterStore {
+  return new MeshRouterStore({
+    primary: createStorageStore(),
+    primarySourceId: 'idb',
+    requestTimeoutMs: 5_500,
+    sources: [
+      {
+        id: 'p2p',
+        get: async (hash) => requestP2PBlob(toHex(hash)),
+      },
+      {
+        id: 'blossom',
+        isAvailable: () => !!blossom && blossom.getServers().some((server) => server.read !== false),
+        get: async (hash) => blossom ? blossom.fetch(toHex(hash)) : null,
+      },
+    ],
+  });
 }
 
 async function getPlaintextFileSize(fileCid: CID): Promise<number | null> {
@@ -550,7 +558,8 @@ function init(config: WorkerConfig): void {
       publishBlossomBandwidth(stats);
     }
   );
-  tree = new HashTree({ store: createWorkerStore() });
+  meshStore = createMeshStore();
+  tree = new HashTree({ store: meshStore });
   publishBlossomBandwidth(blossom.getBandwidthStats());
   emitDiagnostic('info', 'worker', 'initialized', 'Hashtree worker initialized', {
     storeName,

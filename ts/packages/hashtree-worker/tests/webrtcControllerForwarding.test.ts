@@ -1,6 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { sha256, type Store } from '@hashtree/core';
-import { createRequest, createResponse, encodeRequest, encodeResponse } from '@hashtree/nostr';
+import {
+  MSG_TYPE_RESPONSE,
+  createRequest,
+  createResponse,
+  encodeRequest,
+  encodeResponse,
+  parseMessage,
+} from '@hashtree/nostr';
 import { WebRTCController } from '../src/p2p/webrtcController.js';
 
 interface ControllerPeer {
@@ -23,6 +30,16 @@ function createForwardingController(localStore: Store): {
   controller: WebRTCController;
   internal: ControllerPrivateApi;
   sentData: Array<{ peerId: string; data: Uint8Array }>;
+}
+function createForwardingController(
+  localStore: Store,
+  options: {
+    upstreamFetch?: (hash: Uint8Array) => Promise<Uint8Array | null>;
+  } = {},
+): {
+  controller: WebRTCController;
+  internal: ControllerPrivateApi;
+  sentData: Array<{ peerId: string; data: Uint8Array }>;
 } {
   const sentData: Array<{ peerId: string; data: Uint8Array }> = [];
   const controller = new WebRTCController({
@@ -35,6 +52,7 @@ function createForwardingController(localStore: Store): {
     },
     sendSignaling: async () => {},
     requestTimeout: 100,
+    upstreamFetch: options.upstreamFetch,
   });
 
   const internal = controller as unknown as ControllerPrivateApi;
@@ -46,6 +64,16 @@ function connectPeer(internal: ControllerPrivateApi, peerId: string, pubkey: str
   peer.state = 'connected';
   peer.dataChannelReady = true;
   return peer;
+}
+
+function countResponseMessages(
+  sentData: Array<{ peerId: string; data: Uint8Array }>,
+  peerId: string,
+): number {
+  return sentData.filter((entry) => entry.peerId === peerId)
+    .map((entry) => parseMessage(entry.data))
+    .filter((message) => message?.type === MSG_TYPE_RESPONSE)
+    .length;
 }
 
 describe('WebRTCController forwarding behavior', () => {
@@ -168,5 +196,62 @@ describe('WebRTCController forwarding behavior', () => {
     expect(statsA?.forwardedResolved).toBe(1);
     expect(statsB?.forwardedSuppressed).toBe(1);
     expect(statsB?.forwardedResolved).toBe(1);
+  });
+
+  it('serves a peer miss from the upstream fetch path and caches it locally', async () => {
+    const localStore: Store = {
+      put: vi.fn().mockResolvedValue(true),
+      get: vi.fn().mockResolvedValue(null),
+      has: async () => false,
+      delete: async () => false,
+    };
+    const payload = new Uint8Array([42, 43, 44, 45]);
+    const hash = await sha256(payload);
+    const upstreamFetch = vi.fn().mockResolvedValue(payload);
+    const { internal, sentData } = createForwardingController(localStore, { upstreamFetch });
+    const requester = connectPeer(internal, 'peer-requester', 'requester-pubkey');
+
+    const requestBytes = new Uint8Array(encodeRequest(createRequest(hash, 3)));
+    await internal.onDataChannelMessage(requester.peerId, requestBytes);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(upstreamFetch).toHaveBeenCalledTimes(1);
+    expect(localStore.put).toHaveBeenCalledWith(hash, payload);
+    expect(countResponseMessages(sentData, requester.peerId)).toBe(1);
+  });
+
+  it('deduplicates upstream fetches across multiple requesters for the same hash', async () => {
+    const localStore: Store = {
+      put: vi.fn().mockResolvedValue(true),
+      get: vi.fn().mockResolvedValue(null),
+      has: async () => false,
+      delete: async () => false,
+    };
+    const payload = new Uint8Array([7, 8, 9, 10]);
+    const hash = await sha256(payload);
+    let resolveUpstream: ((value: Uint8Array | null) => void) | null = null;
+    const upstreamFetch = vi.fn().mockImplementation(
+      () => new Promise<Uint8Array | null>((resolve) => {
+        resolveUpstream = resolve;
+      }),
+    );
+
+    const { internal, sentData } = createForwardingController(localStore, { upstreamFetch });
+    const requesterA = connectPeer(internal, 'peer-requester-a', 'requester-a-pubkey');
+    const requesterB = connectPeer(internal, 'peer-requester-b', 'requester-b-pubkey');
+    const requestBytes = new Uint8Array(encodeRequest(createRequest(hash, 4)));
+
+    await internal.onDataChannelMessage(requesterA.peerId, requestBytes);
+    await internal.onDataChannelMessage(requesterB.peerId, requestBytes);
+
+    expect(upstreamFetch).toHaveBeenCalledTimes(1);
+
+    resolveUpstream?.(payload);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(countResponseMessages(sentData, requesterA.peerId)).toBe(1);
+    expect(countResponseMessages(sentData, requesterB.peerId)).toBe(1);
   });
 });

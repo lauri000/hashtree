@@ -10,7 +10,7 @@
  * NIP-07 signing/encryption delegated back to main thread.
  */
 
-import { HashTree, BlossomStore, FallbackStore } from '@hashtree/core';
+import { HashTree, BlossomStore } from '@hashtree/core';
 import { DexieStore } from '@hashtree/dexie';
 import type { WorkerRequest, WorkerResponse, WorkerConfig, SignedEvent, WebRTCCommand, BlossomUploadProgress, BlossomServerStatus } from './protocol';
 import { initTreeRootCache, getCachedRootInfo, setCachedRoot, mergeCachedRootKey, clearMemoryCache } from './treeRootCache';
@@ -67,10 +67,11 @@ import {
   resubscribeWebRTCSignaling,
 } from './webrtcSignaling';
 import { BlossomBandwidthTracker } from '../capabilities/blossomBandwidthTracker';
+import { MeshRouterStore } from '../capabilities/meshRouterStore';
 // Worker state
 let tree: HashTree | null = null;
 let store: DexieStore | null = null;
-let fallbackStore: FallbackStore | null = null;
+let meshStore: MeshRouterStore | null = null;
 let blossomStore: BlossomStore | null = null;
 const blossomBandwidthTracker = new BlossomBandwidthTracker((stats) => {
   respond({ type: 'blossomBandwidth', stats });
@@ -596,12 +597,8 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
           _config.blossomServers = msg.servers;
         }
 
-        if (fallbackStore && blossomStore) {
-          fallbackStore.removeFallback(blossomStore);
-        }
         if (msg.servers && msg.servers.length > 0) {
           blossomStore = createTrackedBlossomStore(msg.servers);
-          fallbackStore?.addFallback(blossomStore);
           console.log('[Worker] BlossomStore updated with', msg.servers.length, 'servers');
         } else {
           blossomStore = null;
@@ -754,11 +751,10 @@ async function handleInit(id: string, cfg: WorkerConfig) {
     const storeName = cfg.storeName || 'hashtree-worker';
     store = new DexieStore(storeName);
 
-    // Initialize FallbackStore with local store (WebRTC and Blossom added dynamically)
-    fallbackStore = new FallbackStore({ primary: store, fallbacks: [], timeout: REMOTE_READ_TIMEOUT_MS });
+    meshStore = createMeshStore(store);
 
-    // Initialize HashTree with fallback store (enables remote fetching)
-    tree = new HashTree({ store: fallbackStore });
+    // Initialize HashTree with the adaptive mesh router store.
+    tree = new HashTree({ store: meshStore });
 
     // Initialize tree root cache
     initTreeRootCache(store);
@@ -772,8 +768,6 @@ async function handleInit(id: string, cfg: WorkerConfig) {
     // Initialize Blossom store with signer for uploads and progress callback
     if (cfg.blossomServers && cfg.blossomServers.length > 0) {
       blossomStore = createTrackedBlossomStore(cfg.blossomServers);
-      // Add Blossom to fallback chain for remote chunk fetching
-      fallbackStore?.addFallback(blossomStore);
       console.log('[Worker] Initialized BlossomStore with', cfg.blossomServers.length, 'servers');
     }
 
@@ -844,10 +838,11 @@ async function handleInit(id: string, cfg: WorkerConfig) {
       getFollows, // Used to classify peers into follows/other pools
       debug: false,
       requestTimeout: WEBRTC_REQUEST_TIMEOUT_MS,
+      upstreamFetch: async (hash) => (await meshStore?.getDetailed(hash, {
+        skipPrimary: true,
+        sourceIds: ['blossom'],
+      }))?.data ?? null,
     });
-
-    // Add WebRTC to fallback chain for remote chunk fetching
-    fallbackStore?.addFallback(webrtc);
 
     // Initialize media handler with the tree
     initMediaHandler(tree);
@@ -911,16 +906,8 @@ function handleSetIdentity(id: string, pubkey: string, nsec?: string) {
   console.log('[Worker] SocialGraph root updated:', pubkey.slice(0, 16) + '...');
 
   // Reinitialize Blossom with new signer and progress callback
-  const previousBlossomStore = blossomStore;
-  if (fallbackStore && previousBlossomStore) {
-    fallbackStore.removeFallback(previousBlossomStore);
-  }
-
   if (_config?.blossomServers && _config.blossomServers.length > 0) {
     blossomStore = createTrackedBlossomStore(_config.blossomServers);
-    if (fallbackStore) {
-      fallbackStore.addFallback(blossomStore);
-    }
   } else {
     blossomStore = null;
   }
@@ -956,6 +943,26 @@ function createTrackedBlossomStore(servers: NonNullable<WorkerConfig['blossomSer
   });
 }
 
+function createMeshStore(primary: DexieStore): MeshRouterStore {
+  return new MeshRouterStore({
+    primary,
+    primarySourceId: 'idb',
+    requestTimeoutMs: REMOTE_READ_TIMEOUT_MS,
+    sources: [
+      {
+        id: 'webrtc',
+        isAvailable: () => !!webrtc && webrtc.getConnectedCount() > 0,
+        get: async (hash) => webrtc ? webrtc.get(hash) : null,
+      },
+      {
+        id: 'blossom',
+        isAvailable: () => !!blossomStore,
+        get: async (hash) => blossomStore ? blossomStore.get(hash) : null,
+      },
+    ],
+  });
+}
+
 function emitBlossomBandwidthSnapshot(): void {
   respond({ type: 'blossomBandwidth', stats: blossomBandwidthTracker.getStats() });
 }
@@ -969,6 +976,7 @@ async function handleClose(id: string) {
   // Clear caches
   clearMemoryCache();
   store = null;
+  meshStore = null;
   tree = null;
   blossomStore = null;
   blossomBandwidthTracker.reset();
@@ -981,73 +989,12 @@ async function handleClose(id: string) {
 // ============================================================================
 
 async function handleGet(id: string, hash: Uint8Array) {
-  if (!store) {
+  if (!meshStore) {
     respond({ type: 'result', id, error: 'Store not initialized' });
     return;
   }
 
-  const raceForData = (promises: Array<Promise<Uint8Array | null>>): Promise<Uint8Array | null> => {
-    if (promises.length === 0) return Promise.resolve(null);
-    return new Promise((resolve) => {
-      let remaining = promises.length;
-      let settled = false;
-      for (const promise of promises) {
-        promise.then((result) => {
-          if (settled) return;
-          if (result) {
-            settled = true;
-            resolve(result);
-            return;
-          }
-          remaining -= 1;
-          if (remaining === 0) resolve(null);
-        }).catch(() => {
-          if (settled) return;
-          remaining -= 1;
-          if (remaining === 0) resolve(null);
-        });
-      }
-    });
-  };
-
-  // 1. Try local store first
-  let data = await store.get(hash);
-
-  // 2. If not found locally, race Blossom and WebRTC (when available).
-  // Prefer the first non-null response to avoid WebRTC timeouts delaying Blossom.
-  if (!data) {
-    const fetches: Array<Promise<Uint8Array | null>> = [];
-    let webrtcPromise: Promise<Uint8Array | null> | null = null;
-
-    if (webrtc) {
-      const connectedPeers = webrtc.getConnectedCount();
-      if (connectedPeers > 0) {
-        const WEBRTC_TIMEOUT = WEBRTC_REQUEST_TIMEOUT_MS;
-        webrtcPromise = webrtc.get(hash);
-        void webrtcPromise.catch(() => {});
-        const timeoutPromise = new Promise<Uint8Array | null>(resolve => setTimeout(() => resolve(null), WEBRTC_TIMEOUT));
-        fetches.push(Promise.race([webrtcPromise, timeoutPromise]));
-      }
-    }
-
-    if (blossomStore) {
-      fetches.push(blossomStore.get(hash).catch(() => null));
-    }
-
-    data = await raceForData(fetches);
-    if (data) {
-      await store.put(hash, data);
-    }
-
-    if (!data && webrtcPromise) {
-      // WebRTC timed out or lost the race; let it continue in background and cache if it succeeds.
-      webrtcPromise.then(async (lateData) => {
-        if (lateData && store) {
-          await store.put(hash, lateData);
-        }
-      }).catch(() => {});
-    }
-  }
+  const data = await meshStore.get(hash);
 
   if (data) {
     // Transfer the ArrayBuffer to avoid copying

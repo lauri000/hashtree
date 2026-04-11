@@ -2,8 +2,6 @@ import {
   BlossomStore,
   type BlossomSigner,
   type BlossomUploadCallback,
-  sha256,
-  toHex,
   fromHex,
 } from '@hashtree/core';
 import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
@@ -21,7 +19,6 @@ export const DEFAULT_BLOSSOM_SERVERS: BlossomServerConfig[] = [
   { url: 'https://upload.iris.to', read: false, write: true },
 ];
 
-const READ_FETCH_TIMEOUT_MS = 10_000;
 const MAX_CONCURRENT_READ_FETCHES = 12;
 
 let activeReadFetches = 0;
@@ -177,70 +174,11 @@ export class BlossomTransport {
       return inflight;
     }
 
-    const pending = this.fetchFromReadServers(hashHex)
+    const pending = withReadFetchSlot(() => this.store.get(fromHex(hashHex)))
       .finally(() => {
         this.inflightFetches.delete(hashHex);
       });
     this.inflightFetches.set(hashHex, pending);
     return await pending;
-  }
-
-  private async fetchFromReadServers(hashHex: string): Promise<Uint8Array | null> {
-    const readServers = this.servers.filter(server => server.read !== false);
-    if (readServers.length === 0) {
-      return null;
-    }
-
-    const pendingFetches = readServers.map((server) =>
-      this.fetchFromServer(normalizeServerUrl(server.url), hashHex)
-    );
-
-    return await new Promise<Uint8Array | null>((resolve) => {
-      let settled = false;
-      let remaining = pendingFetches.length;
-
-      for (const fetchPromise of pendingFetches) {
-        fetchPromise
-          .then((result) => {
-            if (settled) return;
-            if (result) {
-              settled = true;
-              resolve(result);
-              return;
-            }
-
-            remaining -= 1;
-            if (remaining === 0) {
-              resolve(null);
-            }
-          })
-          .catch(() => {
-            if (settled) return;
-            remaining -= 1;
-            if (remaining === 0) {
-              resolve(null);
-            }
-          });
-      }
-    });
-  }
-
-  private async fetchFromServer(baseUrl: string, hashHex: string): Promise<Uint8Array | null> {
-    return await withReadFetchSlot(async () => {
-      const url = `${baseUrl}/${hashHex}.bin`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), READ_FETCH_TIMEOUT_MS);
-      try {
-        const res = await fetch(url, { signal: controller.signal });
-        if (!res.ok) return null;
-        const data = new Uint8Array(await res.arrayBuffer());
-        const verified = toHex(await sha256(data)) === hashHex;
-        return verified ? data : null;
-      } catch {
-        return null;
-      } finally {
-        clearTimeout(timeout);
-      }
-    });
   }
 }

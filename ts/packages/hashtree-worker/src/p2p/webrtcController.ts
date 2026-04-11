@@ -105,6 +105,7 @@ export interface WebRTCControllerConfig {
   localStore: Store;
   sendCommand: (cmd: WebRTCCommand) => void;
   sendSignaling: (msg: SignalingMessage, recipientPubkey?: string) => Promise<void>;
+  upstreamFetch?: (hash: Uint8Array) => Promise<Uint8Array | null>;
   getFollows?: () => Set<string>;
   requestTimeout?: number;
   forwardRateLimit?: {
@@ -136,6 +137,8 @@ export class WebRTCController {
   private debug: boolean;
   private recentRequests = new LRUCache<string, number>(1000);
   private forwardingMachine: QueryForwardingMachine;
+  private upstreamFetch?: (hash: Uint8Array) => Promise<Uint8Array | null>;
+  private pendingUpstreamFetches = new Map<string, Promise<Uint8Array | null>>();
   private readonly peerSelector: PeerSelector;
   private routing: {
     selectionStrategy: SelectionStrategy;
@@ -158,6 +161,7 @@ export class WebRTCController {
     this.localStore = config.localStore;
     this.sendCommand = config.sendCommand;
     this.sendSignaling = config.sendSignaling;
+    this.upstreamFetch = config.upstreamFetch;
     this.requestTimeout = config.requestTimeout ?? 1000;
     this.debug = config.debug ?? false;
     this.routing = {
@@ -214,6 +218,7 @@ export class WebRTCController {
       this.closePeer(peerId);
     }
     this.forwardingMachine.stop();
+    this.pendingUpstreamFetches.clear();
   }
 
   // ============================================================================
@@ -905,6 +910,8 @@ export class WebRTCController {
         requestedAt: Date.now(),
       });
 
+      const upstreamActive = this.startUpstreamFetch(hashKey, req.h);
+
       // Forward if HTL allows
       const htl = req.htl ?? MAX_HTL;
       if (shouldForward(htl)) {
@@ -920,19 +927,25 @@ export class WebRTCController {
           return;
         }
         if (decision.kind === 'rate_limited') {
-          peer.theirRequests.delete(hashKey);
+          if (!upstreamActive) {
+            peer.theirRequests.delete(hashKey);
+          }
           this.log(`Forward rate-limited for ${peer.peerId.slice(0, 20)} hash ${hashKey.slice(0, 16)}`);
           return;
         }
         if (decision.kind === 'no_targets') {
-          peer.theirRequests.delete(hashKey);
+          if (!upstreamActive) {
+            peer.theirRequests.delete(hashKey);
+          }
           return;
         }
 
         const forwarded = this.forwardRequest(req.h, decision.targets, newHtl);
         if (forwarded <= 0) {
           const requesterIds = this.forwardingMachine.cancelForward(hashKey);
-          this.clearRequesterMarkers(hashKey, requesterIds);
+          if (!upstreamActive) {
+            this.clearRequesterMarkers(hashKey, requesterIds);
+          }
           return;
         }
         peer.stats.forwardedRequests++;
@@ -1073,6 +1086,37 @@ export class WebRTCController {
     for (const requesterId of requesterIds) {
       this.peers.get(requesterId)?.theirRequests.delete(hashKey);
     }
+  }
+
+  private startUpstreamFetch(hashKey: string, hash: Uint8Array): boolean {
+    if (!this.upstreamFetch || this.pendingUpstreamFetches.has(hashKey)) {
+      return Boolean(this.upstreamFetch);
+    }
+
+    let pending: Promise<Uint8Array | null>;
+    pending = this.upstreamFetch(hash)
+      .then(async (data) => {
+        if (!data) return null;
+
+        const valid = await verifyHash(data, hash);
+        if (!valid) {
+          return null;
+        }
+
+        await this.localStore.put(hash, data).catch(() => false);
+        await this.pushToRequesters(hash, data, '');
+        this.forwardingMachine.resolveForward(hashKey);
+        return data;
+      })
+      .catch(() => null)
+      .finally(() => {
+        if (this.pendingUpstreamFetches.get(hashKey) === pending) {
+          this.pendingUpstreamFetches.delete(hashKey);
+        }
+      });
+
+    this.pendingUpstreamFetches.set(hashKey, pending);
+    return true;
   }
 
   // ============================================================================
