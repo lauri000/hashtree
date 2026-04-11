@@ -1515,4 +1515,197 @@ mod tests {
         assert!(stored.iter().any(|candidate| candidate.id == event.id));
         Ok(())
     }
+
+    #[tokio::test]
+    async fn websocket_req_is_rate_limited_after_configured_quota() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+        let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            HashSet::new(),
+        ));
+        let relay = Arc::new(NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::new(),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                spambox_max_reqs_per_min: 1,
+                ..Default::default()
+            },
+        )?);
+
+        let state = test_app_state(&tmp, relay, String::new())?;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let app = axum::Router::new().route(
+            "/ws",
+            axum::routing::get({
+                let state = state.clone();
+                move |ws: WebSocketUpgrade| {
+                    let state = state.clone();
+                    async move { ws_data_with_client_pubkey(state, ws, None) }
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let (mut socket, _) = connect_async(format!("ws://{addr}/ws")).await?;
+        socket
+            .send(TungsteniteMessage::Text(
+                NostrClientMessage::req(SubscriptionId::new("sub-1"), vec![Filter::new()])
+                    .as_json()
+                    .into(),
+            ))
+            .await?;
+
+        let first = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("websocket closed before first relay reply"))??;
+        let TungsteniteMessage::Text(first_text) = first else {
+            anyhow::bail!("expected text EOSE reply");
+        };
+        match NostrRelayMessage::from_json(first_text.as_str())? {
+            NostrRelayMessage::EndOfStoredEvents(subscription_id) => {
+                assert_eq!(subscription_id, SubscriptionId::new("sub-1"));
+            }
+            other => anyhow::bail!("expected EOSE for first request, got {:?}", other),
+        }
+
+        socket
+            .send(TungsteniteMessage::Text(
+                NostrClientMessage::req(SubscriptionId::new("sub-2"), vec![Filter::new()])
+                    .as_json()
+                    .into(),
+            ))
+            .await?;
+
+        let second = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("websocket closed before rate-limit reply"))??;
+        let TungsteniteMessage::Text(second_text) = second else {
+            anyhow::bail!("expected text CLOSED reply");
+        };
+        let second_value: serde_json::Value = serde_json::from_str(second_text.as_str())?;
+        assert_eq!(
+            second_value,
+            serde_json::json!(["CLOSED", "sub-2", "rate limited"])
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn websocket_publish_is_rate_limited_for_untrusted_spambox_events() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                tmp.path(),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+        let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+            Arc::clone(&backend),
+            0,
+            HashSet::new(),
+        ));
+        let relay = Arc::new(NostrRelay::new(
+            Arc::clone(&backend),
+            tmp.path().to_path_buf(),
+            HashSet::new(),
+            Some(access),
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                spambox_max_events_per_min: 1,
+                ..Default::default()
+            },
+        )?);
+
+        let state = test_app_state(&tmp, relay, String::new())?;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let app = axum::Router::new().route(
+            "/ws",
+            axum::routing::get({
+                let state = state.clone();
+                move |ws: WebSocketUpgrade| {
+                    let state = state.clone();
+                    async move { ws_data_with_client_pubkey(state, ws, None) }
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let (mut socket, _) = connect_async(format!("ws://{addr}/ws")).await?;
+        let author_keys = Keys::generate();
+        let event_a = EventBuilder::new(Kind::TextNote, "spambox-a", []).to_event(&author_keys)?;
+        let event_b = EventBuilder::new(Kind::TextNote, "spambox-b", []).to_event(&author_keys)?;
+
+        socket
+            .send(TungsteniteMessage::Text(
+                NostrClientMessage::event(event_a.clone()).as_json().into(),
+            ))
+            .await?;
+
+        let first = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("websocket closed before first publish ack"))??;
+        let TungsteniteMessage::Text(first_text) = first else {
+            anyhow::bail!("expected text publish ack");
+        };
+        match NostrRelayMessage::from_json(first_text.as_str())? {
+            NostrRelayMessage::Ok {
+                event_id,
+                status,
+                message,
+            } => {
+                assert_eq!(event_id, event_a.id);
+                assert!(status);
+                assert_eq!(message, "spambox");
+            }
+            other => anyhow::bail!("expected OK publish ack, got {:?}", other),
+        }
+
+        socket
+            .send(TungsteniteMessage::Text(
+                NostrClientMessage::event(event_b.clone()).as_json().into(),
+            ))
+            .await?;
+
+        let second = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("websocket closed before rate-limit publish ack"))??;
+        let TungsteniteMessage::Text(second_text) = second else {
+            anyhow::bail!("expected text publish ack");
+        };
+        match NostrRelayMessage::from_json(second_text.as_str())? {
+            NostrRelayMessage::Ok {
+                event_id,
+                status,
+                message,
+            } => {
+                assert_eq!(event_id, event_b.id);
+                assert!(!status);
+                assert_eq!(message, "rate limited");
+            }
+            other => anyhow::bail!("expected OK=false publish ack, got {:?}", other),
+        }
+
+        Ok(())
+    }
 }
