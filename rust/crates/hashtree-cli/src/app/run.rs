@@ -34,13 +34,14 @@ use super::mount_target::{
 };
 use super::mounts::print_active_mounts;
 use super::nostr_index::{run_socialgraph_index_from_cli, SocialGraphIndexOptions};
-use super::peers::{fetch_profile_name, list_peers};
+use super::peers::list_peers;
 use super::release::publish_release_version;
 use super::resolve::{resolve_cid_input, ResolvedCid};
 use super::socialgraph::{
     run_socialgraph_filter, run_socialgraph_rebuild_profile_index, run_socialgraph_snapshot,
     run_socialgraph_stats, run_socialgraph_warm,
 };
+use super::user::show_user_identity;
 use super::util::chrono_humanize_timestamp;
 #[cfg(feature = "fuse")]
 use std::io;
@@ -846,21 +847,7 @@ pub(crate) async fn run() -> Result<()> {
 
             match identity {
                 None => {
-                    // Show current identity
-                    let (keys, was_generated) = ensure_keys()?;
-                    let npub = keys.public_key().to_bech32()?;
-                    if was_generated {
-                        eprintln!("Generated new identity");
-                    }
-                    // Try to fetch profile name
-                    let config = Config::load()?;
-                    let profile_name =
-                        fetch_profile_name(&config.nostr.relays, &keys.public_key().to_hex()).await;
-                    if let Some(name) = profile_name {
-                        println!("{} ({})", npub, name);
-                    } else {
-                        println!("{}", npub);
-                    }
+                    show_user_identity()?;
                 }
                 Some(id) => {
                     // Set identity - accept nsec or derive from input

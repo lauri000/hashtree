@@ -13,6 +13,15 @@ pub struct StoredKey {
     pub petname: Option<String>,
 }
 
+/// Identities grouped by their source file.
+#[derive(Debug, Clone, Default)]
+pub struct StoredKeyLists {
+    /// Identities loaded from `~/.hashtree/keys`.
+    pub keys_file_entries: Vec<StoredKey>,
+    /// Public read-only identities loaded from `~/.hashtree/aliases`.
+    pub alias_file_entries: Vec<StoredKey>,
+}
+
 impl StoredKey {
     /// Create from secret key hex, deriving pubkey
     pub fn from_secret_hex(secret_hex: &str, petname: Option<String>) -> Result<Self> {
@@ -148,7 +157,7 @@ fn load_identities_from_path(path: &std::path::Path, kind: IdentityFileKind) -> 
     keys
 }
 
-pub(super) fn resolve_self_identity(keys: &[StoredKey]) -> Option<(String, Option<String>)> {
+pub fn resolve_self_identity(keys: &[StoredKey]) -> Option<(String, Option<String>)> {
     keys.iter()
         .find(|k| k.petname.as_deref() == Some("self") && k.secret_hex.is_some())
         .or_else(|| {
@@ -159,17 +168,27 @@ pub(super) fn resolve_self_identity(keys: &[StoredKey]) -> Option<(String, Optio
         .map(|key| (key.pubkey_hex.clone(), key.secret_hex.clone()))
 }
 
-/// Load all keys from config files
-pub fn load_keys() -> Vec<StoredKey> {
+/// Load identities from config files, grouped by source.
+pub fn load_key_lists() -> StoredKeyLists {
     ensure_aliases_file_hint();
 
-    let mut keys =
-        load_identities_from_path(&hashtree_config::get_keys_path(), IdentityFileKind::Keys);
-    keys.extend(load_identities_from_path(
-        &hashtree_config::get_aliases_path(),
-        IdentityFileKind::Aliases,
-    ));
+    StoredKeyLists {
+        keys_file_entries: load_identities_from_path(
+            &hashtree_config::get_keys_path(),
+            IdentityFileKind::Keys,
+        ),
+        alias_file_entries: load_identities_from_path(
+            &hashtree_config::get_aliases_path(),
+            IdentityFileKind::Aliases,
+        ),
+    }
+}
 
+/// Load all keys from config files
+pub fn load_keys() -> Vec<StoredKey> {
+    let lists = load_key_lists();
+    let mut keys = lists.keys_file_entries;
+    keys.extend(lists.alias_file_entries);
     keys
 }
 

@@ -58,9 +58,9 @@ use std::time::Duration;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 use tracing::{debug, info, warn};
 
-#[cfg(test)]
-use identity::resolve_self_identity;
-pub use identity::{load_keys, resolve_identity, StoredKey};
+pub use identity::{
+    load_key_lists, load_keys, resolve_identity, resolve_self_identity, StoredKey, StoredKeyLists,
+};
 #[cfg(test)]
 use repo_metadata::pick_latest_event;
 use repo_metadata::{

@@ -18,6 +18,7 @@ pub(crate) mod release;
 pub(crate) mod repos;
 pub(crate) mod resolve;
 pub(crate) mod socialgraph;
+pub(crate) mod user;
 pub(crate) mod util;
 
 mod run;
