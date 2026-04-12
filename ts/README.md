@@ -29,6 +29,16 @@ Blossom-compatible storage with chunking and directory structure. Merkle roots c
 - [`packages/ndk`](packages/ndk) - Nostr SDK used by Iris apps
 - [`packages/ndk-cache`](packages/ndk-cache) - Cache layer for NDK
 
+## Portable App Runtime
+
+[`@hashtree/worker`](https://www.npmjs.com/package/@hashtree/worker) is the
+app-facing runtime for sites that should work both in ordinary browsers and in
+[`iris-browser`](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-browser).
+Browse the source at
+[`hashtree/ts/packages/hashtree-worker`](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/hashtree/ts/packages/hashtree-worker)
+and see the Iris host/runtime notes in
+[`iris-browser/apps/iris/README.md`](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-browser/apps/iris/README.md).
+
 ## Installation
 
 ```bash
