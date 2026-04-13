@@ -18,6 +18,7 @@ use tracing::debug;
 use crate::config::Config as CliConfig;
 use crate::storage::HashtreeStore;
 use crate::webrtc::WebRTCState;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 fn child_cid(parent: &Cid, link: &Link) -> Cid {
     let inherits_parent_key = link
@@ -36,6 +37,37 @@ fn child_cid(parent: &Cid, link: &Link) -> Cid {
         } else {
             None
         }),
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct FetchProgress {
+    chunks_fetched: AtomicUsize,
+    bytes_fetched: AtomicU64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FetchProgressSnapshot {
+    pub chunks_fetched: usize,
+    pub bytes_fetched: u64,
+}
+
+impl FetchProgress {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn snapshot(&self) -> FetchProgressSnapshot {
+        FetchProgressSnapshot {
+            chunks_fetched: self.chunks_fetched.load(Ordering::Relaxed),
+            bytes_fetched: self.bytes_fetched.load(Ordering::Relaxed),
+        }
+    }
+
+    fn record_chunk(&self, byte_len: usize) {
+        self.chunks_fetched.fetch_add(1, Ordering::Relaxed);
+        self.bytes_fetched
+            .fetch_add(byte_len as u64, Ordering::Relaxed);
     }
 }
 
@@ -171,7 +203,19 @@ impl Fetcher {
         webrtc_state: Option<&Arc<WebRTCState>>,
         root_cid: &Cid,
     ) -> Result<(usize, u64)> {
-        self.fetch_cid_tree_parallel(store, webrtc_state, root_cid, 1)
+        self.fetch_cid_tree_with_progress(store, webrtc_state, root_cid, None)
+            .await
+    }
+
+    /// Fetch an entire tree from a CID, preserving decryption keys, with optional progress updates.
+    pub async fn fetch_cid_tree_with_progress(
+        &self,
+        store: &HashtreeStore,
+        webrtc_state: Option<&Arc<WebRTCState>>,
+        root_cid: &Cid,
+        progress: Option<&FetchProgress>,
+    ) -> Result<(usize, u64)> {
+        self.fetch_cid_tree_parallel_with_progress(store, webrtc_state, root_cid, 1, progress)
             .await
     }
 
@@ -197,8 +241,20 @@ impl Fetcher {
         root_cid: &Cid,
         concurrency: usize,
     ) -> Result<(usize, u64)> {
+        self.fetch_cid_tree_parallel_with_progress(store, webrtc_state, root_cid, concurrency, None)
+            .await
+    }
+
+    /// Fetch an entire tree with parallel downloads, preserving decryption keys, with optional progress updates.
+    pub async fn fetch_cid_tree_parallel_with_progress(
+        &self,
+        store: &HashtreeStore,
+        webrtc_state: Option<&Arc<WebRTCState>>,
+        root_cid: &Cid,
+        concurrency: usize,
+        progress: Option<&FetchProgress>,
+    ) -> Result<(usize, u64)> {
         use futures::stream::{FuturesUnordered, StreamExt};
-        use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
         let chunks_fetched = Arc::new(AtomicUsize::new(0));
         let bytes_fetched = Arc::new(AtomicU64::new(0));
@@ -263,6 +319,9 @@ impl Fetcher {
                     Ok(data) => {
                         // Store it
                         store.put_blob(&data)?;
+                        if let Some(progress) = progress {
+                            progress.record_chunk(data.len());
+                        }
                         chunks_fetched.fetch_add(1, Ordering::Relaxed);
                         bytes_fetched.fetch_add(data.len() as u64, Ordering::Relaxed);
 

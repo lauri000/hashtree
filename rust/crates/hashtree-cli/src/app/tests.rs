@@ -15,14 +15,17 @@ use super::resolve::{
 use super::run::{
     find_existing_active_mount, is_stale_mount_io_error, should_warn_for_temporary_mountpoint,
 };
-use super::run::{format_cid_for_display, resolve_cat_target_cid, warn_if_stun_unavailable};
+use super::run::{
+    format_cid_for_display, resolve_cat_target_cid, resolve_load_target_cid,
+    warn_if_stun_unavailable,
+};
 use crate::app::args::{CashuCommands, CashuMintCommands, ReleaseCommands, SocialGraphCommands};
 use crate::app::args::{Cli, Commands};
 #[cfg(feature = "fuse")]
 use crate::app::mount_registry::ActiveMount;
 use clap::{CommandFactory, Parser};
-use hashtree_cli::{Config as AppConfig, FetchConfig, Fetcher, HashtreeStore};
 use hashtree_cli::config::ServerMode;
+use hashtree_cli::{Config as AppConfig, FetchConfig, Fetcher, HashtreeStore};
 use hashtree_core::{nhash_decode, Cid};
 use nostr::Kind;
 #[cfg(feature = "fuse")]
@@ -385,6 +388,18 @@ fn test_cli_parses_release_publish_command() {
             assert!(local);
         }
         _ => panic!("expected release publish command"),
+    }
+}
+
+#[test]
+fn test_cli_parses_load_command() {
+    let cli = Cli::parse_from(["htree", "load", "htree://self/releases%2Fapp/index.html"]);
+
+    match cli.command {
+        Commands::Load { cid } => {
+            assert_eq!(cid, "htree://self/releases%2Fapp/index.html");
+        }
+        _ => panic!("expected load command"),
     }
 }
 
@@ -810,6 +825,66 @@ async fn test_resolve_cat_target_cid_resolves_tree_paths_with_decryption_key() {
         .write_file_by_cid_to_writer(&target, &mut output)
         .expect("stream decrypted file");
     assert_eq!(output, expected);
+}
+
+#[tokio::test]
+async fn test_resolve_load_target_cid_resolves_tree_paths_with_decryption_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(HashtreeStore::new(tmp.path().join("store")).unwrap());
+
+    let site_dir = tmp.path().join("site");
+    std::fs::create_dir_all(&site_dir).unwrap();
+    let expected = br#"{"songs":9529}"#;
+    std::fs::write(site_dir.join("root.json"), expected).unwrap();
+
+    let root = store
+        .upload_dir_encrypted_with_options(&site_dir, true)
+        .expect("upload encrypted dir");
+    let resolved = ResolvedCid {
+        cid: Cid::parse(&root).expect("parse encrypted root cid"),
+        path: Some("root.json".to_string()),
+    };
+
+    let fetcher = Fetcher::new(FetchConfig::default());
+    let target = resolve_load_target_cid(&fetcher, &store, &resolved, None)
+        .await
+        .expect("resolve load target");
+
+    assert!(
+        target.key.is_some(),
+        "resolved file cid should preserve decrypt key"
+    );
+
+    let mut output = Vec::new();
+    store
+        .write_file_by_cid_to_writer(&target, &mut output)
+        .expect("stream decrypted file");
+    assert_eq!(output, expected);
+}
+
+#[tokio::test]
+async fn test_resolve_load_target_cid_keeps_file_root_when_input_has_display_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(HashtreeStore::new(tmp.path().join("store")).unwrap());
+
+    let source = tmp.path().join("notes.txt");
+    std::fs::write(&source, "hello from load").unwrap();
+
+    let cid = store
+        .upload_file_encrypted(&source)
+        .expect("upload encrypted file");
+    let parsed = Cid::parse(&cid).expect("parse encrypted file cid");
+    let resolved = ResolvedCid {
+        cid: parsed.clone(),
+        path: Some("notes.txt".to_string()),
+    };
+
+    let fetcher = Fetcher::new(FetchConfig::default());
+    let target = resolve_load_target_cid(&fetcher, &store, &resolved, None)
+        .await
+        .expect("resolve file-root load target");
+
+    assert_eq!(target, parsed);
 }
 
 #[tokio::test]

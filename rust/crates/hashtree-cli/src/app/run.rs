@@ -6,13 +6,16 @@ use hashtree_cli::config::{
 #[cfg(feature = "p2p")]
 use hashtree_cli::WebRTCManager;
 use hashtree_cli::{
-    spawn_background_eviction_task, Config, FetchConfig, Fetcher, HashtreeServer, HashtreeStore,
-    NostrKeys, NostrResolverConfig, NostrRootResolver, NostrToBech32, RootResolver,
+    spawn_background_eviction_task, Config, FetchConfig, FetchProgress, Fetcher, HashtreeServer,
+    HashtreeStore, NostrKeys, NostrResolverConfig, NostrRootResolver, NostrToBech32, RootResolver,
     BACKGROUND_EVICTION_INTERVAL,
 };
 use hashtree_core::{Cid, HashTree, HashTreeConfig, NHashData};
 use std::collections::HashSet;
+use std::future::Future;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -380,8 +383,11 @@ pub(crate) async fn run() -> Result<()> {
                             cashu_mint_metadata,
                         )
                     } else {
-                        let manager =
-                            WebRTCManager::new_with_classifier(keys.clone(), webrtc_config, peer_classifier);
+                        let manager = WebRTCManager::new_with_classifier(
+                            keys.clone(),
+                            webrtc_config,
+                            peer_classifier,
+                        );
                         let _ = cashu_payment_client;
                         let _ = cashu_mint_metadata;
                         manager
@@ -674,54 +680,63 @@ pub(crate) async fn run() -> Result<()> {
             )
             .await?
         }
+        Commands::Load { cid: cid_input } => {
+            let resolved = resolve_cid_input(&cid_input).await?;
+            let store = Arc::new(HashtreeStore::new(&data_dir)?);
+            let fetcher = Fetcher::new(FetchConfig::default());
+            let progress = Arc::new(FetchProgress::new());
+            let target_cid = run_with_fetch_progress("Loading", Arc::clone(&progress), async {
+                resolve_load_target_cid(&fetcher, &store, &resolved, Some(progress.as_ref())).await
+            })
+            .await?;
+            ensure_loaded_target_present(&store, &target_cid)?;
+
+            let fetched = progress.snapshot();
+            if fetched.chunks_fetched > 0 {
+                println!(
+                    "Loaded {} into local storage ({})",
+                    format_cid_for_display(&target_cid),
+                    format_fetch_summary(fetched)
+                );
+            } else {
+                println!(
+                    "Already available locally: {}",
+                    format_cid_for_display(&target_cid)
+                );
+            }
+        }
         Commands::Get {
             cid: cid_input,
             output,
         } => {
-            use hashtree_cli::{FetchConfig, Fetcher};
             use hashtree_core::{to_hex, Cid};
 
             // Resolve to Cid (raw bytes, no hex conversion needed for nhash)
             let resolved = resolve_cid_input(&cid_input).await?;
-            let cid = resolved.cid;
-            let hash_hex = to_hex(&cid.hash);
+            let cid = resolved.cid.clone();
 
             let store = Arc::new(HashtreeStore::new(&data_dir)?);
             let fetcher = Fetcher::new(FetchConfig::default());
-
-            // Try to fetch tree from remote if not local
-            fetcher.fetch_cid_tree(&store, None, &cid).await?;
+            let progress = Arc::new(FetchProgress::new());
+            let target_cid = run_with_fetch_progress("Fetching", Arc::clone(&progress), async {
+                resolve_load_target_cid(&fetcher, &store, &resolved, Some(progress.as_ref())).await
+            })
+            .await?;
+            ensure_loaded_target_present(&store, &target_cid)?;
 
             // Check if it's a directory
             let listing = store.get_directory_listing_by_cid(&cid)?;
 
             // Handle path: nhash/path/to/file.ext
-            if let Some(ref path) = resolved.path {
-                if listing.is_some() {
-                    // nhash points to directory - resolve path within it
-                    let resolved_cid = store
-                        .resolve_path(&cid, path)?
-                        .ok_or_else(|| anyhow::anyhow!("Path not found in directory: {}", path))?;
+            if let Some(path) = resolved.path.as_deref() {
+                let filename = path.rsplit('/').next().unwrap_or(path);
+                let out_path = output.unwrap_or_else(|| PathBuf::from(filename));
 
-                    // Fetch the resolved file if needed
-                    fetcher.fetch_cid_tree(&store, None, &resolved_cid).await?;
-
-                    // Get the filename from the path
-                    let filename = path.rsplit('/').next().unwrap_or(path);
-                    let out_path = output.unwrap_or_else(|| PathBuf::from(filename));
-
-                    store.write_file_by_cid(&resolved_cid, &out_path)?;
-                    println!("{} -> {}", to_hex(&resolved_cid.hash), out_path.display());
-                } else {
-                    // nhash points to file - save with the filename from path
-                    let filename = path.rsplit('/').next().unwrap_or(path);
-                    let out_path = output.unwrap_or_else(|| PathBuf::from(filename));
-
-                    store.write_file_by_cid(&cid, &out_path)?;
-                    println!("{} -> {}", hash_hex, out_path.display());
-                }
+                store.write_file_by_cid(&target_cid, &out_path)?;
+                println!("{} -> {}", to_hex(&target_cid.hash), out_path.display());
             } else if listing.is_some() {
                 // It's a directory - create it and download contents
+                let hash_hex = to_hex(&cid.hash);
                 let out_dir = output.unwrap_or_else(|| PathBuf::from(&hash_hex));
                 std::fs::create_dir_all(&out_dir)?;
 
@@ -754,8 +769,9 @@ pub(crate) async fn run() -> Result<()> {
                 println!("Done.");
             } else {
                 // Try as a file - stream from store to output path with decryption support.
+                let hash_hex = to_hex(&target_cid.hash);
                 let out_path = output.unwrap_or_else(|| PathBuf::from(&hash_hex));
-                store.write_file_by_cid(&cid, &out_path)?;
+                store.write_file_by_cid(&target_cid, &out_path)?;
                 println!("{} -> {}", hash_hex, out_path.display());
             }
         }
@@ -1343,6 +1359,33 @@ pub(crate) fn format_cid_for_display(cid: &Cid) -> String {
     .unwrap_or_else(|_| cid.to_string())
 }
 
+pub(crate) async fn resolve_load_target_cid(
+    fetcher: &Fetcher,
+    store: &Arc<HashtreeStore>,
+    resolved: &ResolvedCid,
+    progress: Option<&FetchProgress>,
+) -> Result<Cid> {
+    let cid = resolved.cid.clone();
+    fetcher
+        .fetch_cid_tree_with_progress(store, None, &cid, progress)
+        .await?;
+
+    let listing = store.get_directory_listing_by_cid(&cid)?;
+    if let Some(path) = resolved.path.as_deref() {
+        if listing.is_some() {
+            let resolved_cid = store
+                .resolve_path(&cid, path)?
+                .ok_or_else(|| anyhow::anyhow!("Path not found in directory: {}", path))?;
+            fetcher
+                .fetch_cid_tree_with_progress(store, None, &resolved_cid, progress)
+                .await?;
+            return Ok(resolved_cid);
+        }
+    }
+
+    Ok(cid)
+}
+
 pub(crate) async fn resolve_cat_target_cid(
     fetcher: &Fetcher,
     store: &Arc<HashtreeStore>,
@@ -1371,6 +1414,13 @@ pub(crate) async fn resolve_cat_target_cid(
     Ok(cid)
 }
 
+fn ensure_loaded_target_present(store: &HashtreeStore, cid: &Cid) -> Result<()> {
+    if store.get_chunk(&cid.hash)?.is_some() {
+        return Ok(());
+    }
+    anyhow::bail!("Hash not found: {}", format_cid_for_display(cid));
+}
+
 async fn resolve_info_target(
     store: &Arc<HashtreeStore>,
     fetcher: &Fetcher,
@@ -1393,6 +1443,150 @@ async fn resolve_info_target(
 
     fetcher.fetch_cid_tree(store, None, &target_cid).await?;
     Ok(target_cid)
+}
+
+async fn run_with_fetch_progress<T, F>(
+    label: &'static str,
+    progress: Arc<FetchProgress>,
+    future: F,
+) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    if !std::io::stderr().is_terminal() {
+        return future.await;
+    }
+
+    let done = Arc::new(AtomicBool::new(false));
+    let outcome = Arc::new(AtomicU8::new(0));
+    let progress_task =
+        spawn_fetch_progress_task(label, progress, Arc::clone(&done), Arc::clone(&outcome));
+    let result = future.await;
+    outcome.store(if result.is_ok() { 1 } else { 2 }, Ordering::Relaxed);
+    done.store(true, Ordering::Relaxed);
+    let _ = progress_task.await;
+    result
+}
+
+fn spawn_fetch_progress_task(
+    label: &'static str,
+    progress: Arc<FetchProgress>,
+    done: Arc<AtomicBool>,
+    outcome: Arc<AtomicU8>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(200));
+        let start = tokio::time::Instant::now();
+        let mut shown = false;
+        let mut previous_line_len = 0usize;
+        let mut last_report_second = None;
+
+        loop {
+            interval.tick().await;
+            let elapsed = start.elapsed();
+            let snapshot = progress.snapshot();
+
+            if done.load(Ordering::Relaxed) {
+                if shown {
+                    let status = match outcome.load(Ordering::Relaxed) {
+                        2 => "stopped",
+                        _ => "complete",
+                    };
+                    let final_line = format!(
+                        "{} {}: {}",
+                        label,
+                        status,
+                        format_fetch_progress_line(snapshot, elapsed)
+                    );
+                    print_progress_line(&final_line, &mut previous_line_len, true);
+                }
+                break;
+            }
+
+            if elapsed < Duration::from_secs(1) {
+                continue;
+            }
+
+            let elapsed_seconds = elapsed.as_secs();
+            if last_report_second == Some(elapsed_seconds) {
+                continue;
+            }
+            last_report_second = Some(elapsed_seconds);
+            shown = true;
+            let line = format!(
+                "{label}... {}",
+                format_fetch_progress_line(snapshot, elapsed)
+            );
+            print_progress_line(&line, &mut previous_line_len, false);
+        }
+    })
+}
+
+fn print_progress_line(line: &str, previous_line_len: &mut usize, newline: bool) {
+    let padding_len = previous_line_len.saturating_sub(line.len());
+    let padding = " ".repeat(padding_len);
+    if newline {
+        eprintln!("\r{line}{padding}");
+    } else {
+        eprint!("\r{line}{padding}");
+        let _ = std::io::stderr().flush();
+    }
+    *previous_line_len = line.len();
+}
+
+fn format_fetch_progress_line(
+    snapshot: hashtree_cli::FetchProgressSnapshot,
+    elapsed: Duration,
+) -> String {
+    if snapshot.chunks_fetched == 0 {
+        return format!("waiting for data ({})", format_duration_compact(elapsed));
+    }
+    format!(
+        "{} fetched in {}",
+        format_fetch_summary(snapshot),
+        format_duration_compact(elapsed)
+    )
+}
+
+fn format_fetch_summary(snapshot: hashtree_cli::FetchProgressSnapshot) -> String {
+    let chunk_label = if snapshot.chunks_fetched == 1 {
+        "chunk"
+    } else {
+        "chunks"
+    };
+    format!(
+        "{} {} ({})",
+        snapshot.chunks_fetched,
+        chunk_label,
+        format_bytes(snapshot.bytes_fetched)
+    )
+}
+
+fn format_duration_compact(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    if seconds >= 60 {
+        return format!("{}m{:02}s", seconds / 60, seconds % 60);
+    }
+    if seconds > 0 {
+        return format!("{seconds}s");
+    }
+    format!("{}ms", duration.as_millis())
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0usize;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 async fn print_info_for_cid(store: &Arc<HashtreeStore>, cid: &Cid) -> Result<bool> {

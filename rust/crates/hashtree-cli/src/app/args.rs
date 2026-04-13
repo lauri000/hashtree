@@ -19,6 +19,7 @@ const CLI_GROUPED_COMMANDS: &str = "\
 
 Content Commands:
   add          Add file or directory to hashtree (like ipfs add)
+  load         Load/prefetch content into local hashtree storage
   get          Get/download content by CID
   cat          Output file content to stdout (like cat)
   push         Push content to file servers (Blossom)
@@ -67,6 +68,7 @@ const CLI_GROUPED_COMMANDS: &str = "\
 
 Content Commands:
   add          Add file or directory to hashtree (like ipfs add)
+  load         Load/prefetch content into local hashtree storage
   get          Get/download content by CID
   cat          Output file content to stdout (like cat)
   push         Push content to file servers (Blossom)
@@ -218,6 +220,12 @@ pub(crate) enum Commands {
         /// Output path (default: current dir, uses CID as filename)
         #[arg(short, long)]
         output: Option<PathBuf>,
+    },
+
+    /// Load/prefetch content into local hashtree storage
+    Load {
+        /// CID or htree:// target to retrieve into local storage
+        cid: String,
     },
 
     /// Output file content to stdout (like cat)
