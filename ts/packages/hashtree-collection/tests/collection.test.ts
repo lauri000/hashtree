@@ -19,6 +19,11 @@ interface Song {
   tags?: string[];
 }
 
+function sequenceRandom(sequence: number[]): () => number {
+  let index = 0;
+  return () => sequence[index++ % sequence.length] ?? 0;
+}
+
 function cidFromSeed(seed: number): CID {
   const hash = new Uint8Array(32);
   for (let index = 0; index < hash.length; index += 1) {
@@ -72,6 +77,21 @@ describe('@hashtree/collection', () => {
     expect(await source.search('songs', 'midnight')).toEqual([]);
     expect(await source.queryIndex('artist', { prefix: 'artist:ada' })).toEqual([]);
     expect(source.manifest.itemCount).toBe(1);
+  });
+
+  it('samples by id using manifest item counts', async () => {
+    const store = new MemoryStore();
+    const writer = new CollectionWriter(store, songDefinition);
+
+    await writer.put({ id: 'song-a', title: 'Midnight Orchard', artist: 'Ada' }, cidFromSeed(3));
+    await writer.put({ id: 'song-b', title: 'Sun Clock', artist: 'Bea' }, cidFromSeed(4));
+    await writer.put({ id: 'song-c', title: 'Silent Tide', artist: 'Cia' }, cidFromSeed(5));
+
+    const source = new CollectionSource(store, writer.manifest());
+    expect(await source.sampleById(2, sequenceRandom([0.1, 0.9, 0.3]))).toEqual([
+      { key: 'song-c', cid: cidFromSeed(5) },
+      { key: 'song-a', cid: cidFromSeed(3) },
+    ]);
   });
 
   it('removes stale index entries when an item is replaced in batch', async () => {
@@ -327,5 +347,101 @@ describe('@hashtree/collection', () => {
     expect((await source.search('songs', 'quiet')).map((result) => result.id)).toEqual(['song-1']);
     expect((await source.search('artists', 'open')).map((result) => result.id)).toEqual(['artist-1']);
     expect((await source.search('albums', 'harbor')).map((result) => result.id)).toEqual(['album-1']);
+  });
+
+  it('bulk reindex rebuilds shared search roots with derived entity targets', async () => {
+    interface CatalogSong {
+      id: string;
+      title: string;
+      artist: string;
+      artistId: string;
+      album: string;
+      albumId: string;
+    }
+
+    const definition: CollectionDefinition<CatalogSong> = {
+      sourceId: 'catalog',
+      getId: (song) => song.id,
+      keyIndexes: [
+        {
+          name: 'artist',
+          keys: (song) => [song.artistId],
+        },
+      ],
+      searchIndexes: [
+        {
+          name: 'songs',
+          rootName: 'catalog-search',
+          prefix: 's:',
+          text: (song) => [song.title, song.artist, song.album],
+        },
+        {
+          name: 'artists',
+          rootName: 'catalog-search',
+          prefix: 'a:',
+          entries: (song, context) => [{
+            id: song.artistId,
+            cid: context.writeContext?.artistCid as CID,
+            text: song.artist,
+          }],
+        },
+        {
+          name: 'albums',
+          rootName: 'catalog-search',
+          prefix: 'l:',
+          entries: (song, context) => [{
+            id: song.albumId,
+            cid: context.writeContext?.albumCid as CID,
+            text: [song.album, song.artist],
+          }],
+        },
+      ],
+    };
+
+    const store = new MemoryStore();
+    const writer = new CollectionWriter(store, definition);
+
+    await writer.reindex([
+      {
+        item: {
+          id: 'song-1',
+          title: 'Quiet Bloom',
+          artist: 'Open Meridian',
+          artistId: 'artist-1',
+          album: 'Harbor Echo',
+          albumId: 'album-1',
+        },
+        cid: cidFromSeed(60),
+        context: {
+          artistCid: cidFromSeed(61),
+          albumCid: cidFromSeed(62),
+        },
+      },
+      {
+        item: {
+          id: 'song-2',
+          title: 'Silver Static',
+          artist: 'Night Circuit',
+          artistId: 'artist-2',
+          album: 'Glass Transit',
+          albumId: 'album-2',
+        },
+        cid: cidFromSeed(63),
+        context: {
+          artistCid: cidFromSeed(64),
+          albumCid: cidFromSeed(65),
+        },
+      },
+    ]);
+
+    const source = new CollectionSource(store, writer.manifest());
+    expect(source.manifest.indexes.songs.root).toEqual(source.manifest.indexes.artists.root);
+    expect(source.manifest.indexes.songs.root).toEqual(source.manifest.indexes.albums.root);
+    expect((await source.search('songs', 'quiet')).map((result) => result.id)).toEqual(['song-1']);
+    expect((await source.search('songs', 'silver')).map((result) => result.id)).toEqual(['song-2']);
+    expect((await source.search('artists', 'open')).map((result) => result.id)).toEqual(['artist-1']);
+    expect((await source.search('artists', 'night')).map((result) => result.id)).toEqual(['artist-2']);
+    expect((await source.search('albums', 'harbor')).map((result) => result.id)).toEqual(['album-1']);
+    expect((await source.queryIndex('artist', { prefix: 'artist-2' })).map((result) => result.key)).toEqual(['artist-2']);
   });
 });

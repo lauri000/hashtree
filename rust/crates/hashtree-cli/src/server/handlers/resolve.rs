@@ -1,10 +1,11 @@
 use super::super::auth::{AppState, CachedResolvedPathEntry, CachedTreeRootEntry, LookupResult};
+use super::super::nostr_query::query_events_for_local_request;
 use super::{list_directory_with_fetch, resolve_path_with_fetch};
-use crate::webrtc::{build_root_filter, pick_latest_event, root_event_from_peer, PeerRootEvent};
+use crate::webrtc::{PeerRootEvent, build_root_filter, pick_latest_event, root_event_from_peer};
 use anyhow::Result;
-use hashtree_core::{from_hex, to_hex, Cid, HashTree, LinkType, Store, TreeEntry};
-use hashtree_resolver::nostr::NostrRootResolver;
+use hashtree_core::{Cid, HashTree, LinkType, Store, TreeEntry, from_hex, to_hex};
 use hashtree_resolver::RootResolver;
+use hashtree_resolver::nostr::NostrRootResolver;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -32,6 +33,11 @@ pub(super) struct ResolvedRoot {
     pub(super) root_event: Option<PeerRootEvent>,
 }
 
+pub(super) struct NostrResolvedRootEvent {
+    pub(super) source: &'static str,
+    pub(super) root_event: PeerRootEvent,
+}
+
 pub(super) fn peer_root_to_cid(root: &PeerRootEvent) -> Option<Cid> {
     let mut cid = Cid::parse(&root.hash).ok()?;
     if cid.key.is_none() {
@@ -43,16 +49,28 @@ pub(super) fn peer_root_to_cid(root: &PeerRootEvent) -> Option<Cid> {
     Some(cid)
 }
 
-pub(super) async fn resolve_root_from_local_relay(
+pub(super) async fn resolve_root_from_nostr_relays(
     state: &AppState,
     pubkey: &str,
     treename: &str,
-) -> Option<PeerRootEvent> {
-    let relay = state.nostr_relay.as_ref()?;
+) -> Option<NostrResolvedRootEvent> {
     let filter = build_root_filter(pubkey, treename)?;
-    let events = relay.query_events(&filter, 50).await;
+    let query = query_events_for_local_request(state, &filter, 50).await;
+    let events = query.merged_events(50);
     let latest = pick_latest_event(events.iter())?;
-    root_event_from_peer(latest, "local-relay", treename)
+    let source = if query
+        .upstream_events
+        .iter()
+        .any(|event| event.id == latest.id)
+    {
+        "nostr-relay"
+    } else {
+        "local-relay"
+    };
+    Some(NostrResolvedRootEvent {
+        source,
+        root_event: root_event_from_peer(latest, source, treename)?,
+    })
 }
 
 pub(super) async fn resolve_root_offline(
@@ -83,8 +101,8 @@ pub(super) async fn resolve_root_without_cache(
     link_key: Option<[u8; 32]>,
 ) -> Option<ResolvedRoot> {
     let cache_key = tree_root_cache_key(pubkey, treename, link_key);
-    if let Some(root) = resolve_root_from_local_relay(state, pubkey, treename).await {
-        if let Some(mut cid) = peer_root_to_cid(&root) {
+    if let Some(root) = resolve_root_from_nostr_relays(state, pubkey, treename).await {
+        if let Some(mut cid) = peer_root_to_cid(&root.root_event) {
             if cid.key.is_none() {
                 cid.key = link_key;
             }
@@ -92,13 +110,13 @@ pub(super) async fn resolve_root_without_cache(
                 state,
                 cache_key.clone(),
                 cid.clone(),
-                "local-relay",
-                Some(root.clone()),
+                root.source,
+                Some(root.root_event.clone()),
             );
             return Some(ResolvedRoot {
                 cid,
-                source: "local-relay",
-                root_event: Some(root),
+                source: root.source,
+                root_event: Some(root.root_event),
             });
         }
     }

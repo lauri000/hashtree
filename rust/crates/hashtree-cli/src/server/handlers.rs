@@ -1,31 +1,33 @@
 use super::auth::AppState;
 use super::mime::get_mime_type;
+use super::nostr_query::query_events_for_local_request;
 pub(super) use super::peer_status::{daemon_status, webrtc_peers};
 use super::request_paths::{
-    parse_api_resolve_request_path, parse_bare_npub_request_path, parse_mutable_htree_request_path,
-    parse_resolve_request_path, parse_virtual_tree_root, request_virtual_tree_root,
-    should_fallback_to_virtual_host_index, VirtualTreeRoot,
+    VirtualTreeRoot, parse_api_resolve_request_path, parse_bare_npub_request_path,
+    parse_mutable_htree_request_path, parse_resolve_request_path, parse_virtual_tree_root,
+    request_virtual_tree_root, should_fallback_to_virtual_host_index,
 };
 use super::ui::root_page;
 use crate::socialgraph;
 use axum::{
     body::Body,
     extract::{ConnectInfo, Multipart, OriginalUri, Path, Query, State},
-    http::{header, Response, StatusCode},
+    http::{Response, StatusCode, header},
     response::{IntoResponse, Json},
 };
 use bytes::Bytes;
+use futures::FutureExt;
 use futures::future::BoxFuture;
 use futures::stream::{self, FuturesUnordered, StreamExt};
-use futures::FutureExt;
 use hashtree_core::{
-    from_hex, nhash_decode, to_hex, Cid, HashTree, HashTreeConfig, HashTreeError, LinkType, Store,
-    TreeEntry,
+    Cid, HashTree, HashTreeConfig, HashTreeError, LinkType, Store, TreeEntry, from_hex,
+    nhash_decode, to_hex,
 };
 use hashtree_resolver::{
-    nostr::{NostrResolverConfig, NostrRootResolver},
     RootResolver,
+    nostr::{NostrResolverConfig, NostrRootResolver},
 };
+use nostr::{Filter as NostrFilter, FromBech32, Kind, PublicKey};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -265,6 +267,94 @@ pub async fn clear_tree_root_cache(
         .status(StatusCode::OK)
         .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .body(Body::from("ok"))
+        .unwrap()
+}
+
+fn parse_nostr_pubkey(input: &str) -> Result<PublicKey, &'static str> {
+    PublicKey::from_hex(input)
+        .or_else(|_| PublicKey::from_bech32(input))
+        .map_err(|_| "Invalid pubkey")
+}
+
+pub async fn nostr_profile(
+    State(state): State<AppState>,
+    Path(pubkey): Path<String>,
+) -> impl IntoResponse {
+    let author = match parse_nostr_pubkey(&pubkey) {
+        Ok(author) => author,
+        Err(error) => {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Body::from(json!({ "error": error }).to_string()))
+                .unwrap();
+        }
+    };
+
+    let latest = query_events_for_local_request(
+        &state,
+        &NostrFilter::new()
+            .author(author)
+            .kind(Kind::Metadata)
+            .limit(50),
+        50,
+    )
+    .await
+    .merged_events(50)
+    .into_iter()
+    .max_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    let Some(event) = latest else {
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .body(Body::from(
+                json!({
+                    "error": "Profile not found",
+                    "pubkey": author.to_hex(),
+                })
+                .to_string(),
+            ))
+            .unwrap();
+    };
+
+    let profile = match serde_json::from_str::<serde_json::Value>(&event.content) {
+        Ok(profile) => profile,
+        Err(error) => {
+            return Response::builder()
+                .status(StatusCode::BAD_GATEWAY)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .body(Body::from(
+                    json!({
+                        "error": format!("Invalid metadata content: {error}"),
+                        "pubkey": event.pubkey.to_hex(),
+                    })
+                    .to_string(),
+                ))
+                .unwrap();
+        }
+    };
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .body(Body::from(
+            json!({
+                "pubkey": event.pubkey.to_hex(),
+                "event_id": event.id.to_hex(),
+                "created_at": event.created_at.as_u64(),
+                "profile": profile,
+            })
+            .to_string(),
+        ))
         .unwrap()
 }
 
@@ -1092,12 +1182,8 @@ pub async fn serve_content_or_blob(
                     tracing::warn!("Failed to cache peer data: {}", e);
                 }
 
-                return build_blob_response(
-                    data,
-                    BlobSource::WebRtcPeer { peer_id },
-                    is_localhost,
-                )
-                .into_response();
+                return build_blob_response(data, BlobSource::WebRtcPeer { peer_id }, is_localhost)
+                    .into_response();
             }
         }
 
@@ -1312,7 +1398,7 @@ pub async fn pin_cid(State(state): State<AppState>, Path(cid): Path<String>) -> 
             return Json(json!({
                 "success": false,
                 "error": format!("Invalid CID format: {}", e)
-            }))
+            }));
         }
     };
     let store = &state.store;
@@ -1338,7 +1424,7 @@ pub async fn unpin_cid(
             return Json(json!({
                 "success": false,
                 "error": format!("Invalid CID format: {}", e)
-            }))
+            }));
         }
     };
     let store = &state.store;

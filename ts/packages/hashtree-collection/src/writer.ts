@@ -233,11 +233,90 @@ export class CollectionWriter<T> {
 
   async rebuild(entries: Iterable<{ item: T; cid: CID; context?: CollectionWriteContext }>): Promise<CollectionState> {
     this.state = createEmptyCollectionState(this.definition);
+    const byIdEntries = new Map<string, CID>();
+    const uniqueIds = new Set<string>();
+    const keyEntries = new Map<string, Map<string, CID>>();
+    const searchEntries = new Map<string, Map<string, CID>>();
+    const searchBuilders = new Map<string, ReturnType<typeof createSearchIndex>>();
+
     for (const entry of entries) {
-      await this.put(entry.item, entry.cid, {
-        context: entry.context,
-      });
+      const nextItem = this.normalize(entry.item);
+      const id = this.definition.getId(nextItem).trim();
+      if (!id) {
+        throw new Error('Collection item id must not be empty');
+      }
+
+      byIdEntries.set(id, entry.cid);
+      uniqueIds.add(id);
+
+      for (const index of this.definition.keyIndexes ?? []) {
+        let indexEntries = keyEntries.get(index.name);
+        if (!indexEntries) {
+          indexEntries = new Map<string, CID>();
+          keyEntries.set(index.name, indexEntries);
+        }
+        for (const key of materializeKeyValues(index, nextItem)) {
+          indexEntries.set(key, entry.cid);
+        }
+      }
+
+      for (const index of this.definition.searchIndexes ?? []) {
+        const searchIndex = this.searchIndexes.get(index.name);
+        if (!searchIndex) {
+          continue;
+        }
+
+        const rootName = index.rootName ?? index.name;
+        let rootEntries = searchEntries.get(rootName);
+        if (!rootEntries) {
+          rootEntries = new Map<string, CID>();
+          searchEntries.set(rootName, rootEntries);
+        }
+        if (!searchBuilders.has(rootName)) {
+          searchBuilders.set(rootName, searchIndex);
+        }
+
+        for (const searchEntry of materializeSearchEntries(index, nextItem, {
+          id,
+          cid: entry.cid,
+          writeContext: entry.context,
+        })) {
+          const targetCid = searchEntry.cid ?? entry.cid;
+          if (!targetCid) {
+            continue;
+          }
+          const terms = searchIndex.parseKeywords(searchEntry.text);
+          if (terms.length === 0) {
+            continue;
+          }
+
+          const prefix = searchEntry.prefix ?? index.prefix ?? defaultSearchPrefix(index.name);
+          const entryId = searchEntry.id ?? id;
+          for (const term of terms) {
+            rootEntries.set(`${prefix}${term}:${entryId}`, targetCid);
+          }
+        }
+      }
     }
+
+    this.state.byIdRoot = await this.byIdIndex.buildLinks(byIdEntries);
+
+    for (const index of this.definition.keyIndexes ?? []) {
+      this.state.keyRoots[index.name] = await this.linkIndex.buildLinks(keyEntries.get(index.name) ?? []);
+    }
+
+    const searchRootGroups = new Map<string, CID | null>();
+    for (const [rootName, rootEntries] of searchEntries) {
+      const searchIndex = searchBuilders.get(rootName);
+      searchRootGroups.set(rootName, searchIndex ? await searchIndex.buildLinks(rootEntries) : null);
+    }
+
+    if (searchRootGroups.size > 0) {
+      this.assignSearchRootGroups(searchRootGroups);
+    }
+
+    this.state.itemCount = uniqueIds.size;
+    this.state.updatedAt = uniqueIds.size > 0 ? Date.now() : 0;
     return this.snapshot;
   }
 

@@ -2,6 +2,7 @@ mod auth;
 pub mod blossom;
 mod handlers;
 mod mime;
+mod nostr_query;
 mod peer_status;
 mod request_paths;
 #[cfg(feature = "p2p")]
@@ -308,6 +309,7 @@ impl HashtreeServer {
                 "/api/nostr/resolve/:pubkey/:treename",
                 get(handlers::resolve_to_hash),
             )
+            .route("/api/nostr/profile/:pubkey", get(handlers::nostr_profile))
             .route("/api/cache-tree-root", post(handlers::cache_tree_root))
             .route(
                 "/api/clear-tree-root-cache",
@@ -359,8 +361,11 @@ impl HashtreeServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nostr_relay::{NostrRelay, NostrRelayConfig};
     use crate::storage::HashtreeStore;
     use hashtree_core::{from_hex, nhash_encode, DirEntry, HashTree, HashTreeConfig, LinkType};
+    use nostr::{EventBuilder, Keys, Kind, Timestamp};
+    use serde_json::json;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -407,6 +412,18 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let port = listener.local_addr()?.port();
         let server = HashtreeServer::new(store, "127.0.0.1:0".to_string());
+        let handle =
+            tokio::spawn(async move { server.run_with_listener(listener).await.map(|_| ()) });
+        Ok((port, handle))
+    }
+
+    async fn spawn_test_server_with_nostr_relay(
+        store: Arc<HashtreeStore>,
+        relay: Arc<NostrRelay>,
+    ) -> Result<(u16, tokio::task::JoinHandle<Result<()>>)> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let server = HashtreeServer::new(store, "127.0.0.1:0".to_string()).with_nostr_relay(relay);
         let handle =
             tokio::spawn(async move { server.run_with_listener(listener).await.map(|_| ()) });
         Ok((port, handle))
@@ -489,6 +506,70 @@ mod tests {
         handle.abort();
         clear_virtual_tree_hosts_for_test();
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn nostr_profile_route_returns_latest_metadata_event() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let store = Arc::new(HashtreeStore::new(temp_dir.path().join("db"))?);
+        let graph_store = {
+            let _guard = crate::socialgraph::test_lock();
+            crate::socialgraph::open_social_graph_store_with_mapsize(
+                &temp_dir.path().join("relay-db"),
+                Some(128 * 1024 * 1024),
+            )?
+        };
+        let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store;
+        let relay = Arc::new(NostrRelay::new(
+            backend,
+            temp_dir.path().to_path_buf(),
+            HashSet::new(),
+            None,
+            NostrRelayConfig {
+                spambox_db_max_bytes: 0,
+                ..Default::default()
+            },
+        )?);
+
+        let author = Keys::generate();
+        let older = EventBuilder::new(
+            Kind::Metadata,
+            json!({ "name": "older", "about": "before" }).to_string(),
+            [],
+        )
+        .custom_created_at(Timestamp::from_secs(10))
+        .to_event(&author)?;
+        let newer = EventBuilder::new(
+            Kind::Metadata,
+            json!({ "name": "newer", "about": "after" }).to_string(),
+            [],
+        )
+        .custom_created_at(Timestamp::from_secs(20))
+        .to_event(&author)?;
+
+        relay.ingest_trusted_event(older).await?;
+        relay.ingest_trusted_event(newer.clone()).await?;
+
+        let (port, handle) = spawn_test_server_with_nostr_relay(store, relay).await?;
+        let response = reqwest::get(format!(
+            "http://127.0.0.1:{port}/api/nostr/profile/{}",
+            author.public_key().to_hex()
+        ))
+        .await?;
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let payload: serde_json::Value = response.json().await?;
+        assert_eq!(payload["profile"]["name"].as_str(), Some("newer"),);
+        assert_eq!(payload["profile"]["about"].as_str(), Some("after"));
+        assert_eq!(payload["created_at"].as_u64(), Some(20));
+        let expected_event_id = newer.id.to_hex();
+        assert_eq!(
+            payload["event_id"].as_str(),
+            Some(expected_event_id.as_str())
+        );
+
+        handle.abort();
         Ok(())
     }
 }

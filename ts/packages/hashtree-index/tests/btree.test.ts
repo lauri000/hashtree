@@ -2,6 +2,11 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { BTree, escapeKey, unescapeKey } from '../src/btree.js';
 import { MemoryStore, HashTree, type CID } from '@hashtree/core';
 
+function sequenceRandom(sequence: number[]): () => number {
+  let index = 0;
+  return () => sequence[index++ % sequence.length] ?? 0;
+}
+
 describe('BTree', () => {
   let store: MemoryStore;
   let btree: BTree;
@@ -540,6 +545,41 @@ describe('BTree', () => {
       }
 
       expect(videoLinks).toEqual(['video:001', 'video:002', 'video:003']);
+    });
+
+    it('should count CID links and read them by ordinal', async () => {
+      const entries: Array<[string, CID]> = [];
+      for (const key of ['c', 'a', 'e', 'b', 'd']) {
+        const { cid } = await tree.putFile(new TextEncoder().encode(key));
+        entries.push([key, cid]);
+      }
+
+      const root = await btree.buildLinks(entries);
+      expect(await btree.countLinks(root)).toBe(5);
+      expect(await btree.getLinkEntryAt(root, 0)).toEqual(['a', entries.find(([key]) => key === 'a')![1]]);
+      expect(await btree.getLinkEntryAt(root, 3)).toEqual(['d', entries.find(([key]) => key === 'd')![1]]);
+      expect(await btree.getLinkEntryAt(root, 4)).toEqual(['e', entries.find(([key]) => key === 'e')![1]]);
+      expect(await btree.getLinkEntryAt(root, 5)).toBeNull();
+    });
+
+    it('should sample CID links without flattening callers into a full list', async () => {
+      const entries: Array<[string, CID]> = [];
+      for (const key of ['a', 'b', 'c', 'd', 'e']) {
+        const { cid } = await tree.putFile(new TextEncoder().encode(key));
+        entries.push([key, cid]);
+      }
+
+      const root = await btree.buildLinks(entries);
+      const sampled = await btree.sampleLinks(root, 3, {
+        totalCount: 5,
+        random: sequenceRandom([0.0, 0.45, 0.81, 0.3, 0.9]),
+      });
+
+      expect(sampled).toEqual([
+        ['e', entries.find(([key]) => key === 'e')![1]],
+        ['c', entries.find(([key]) => key === 'c')![1]],
+        ['a', entries.find(([key]) => key === 'a')![1]],
+      ]);
     });
 
     it('should merge CID link trees', async () => {

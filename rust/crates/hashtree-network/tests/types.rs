@@ -48,6 +48,7 @@ fn test_signaling_message_hello_serialize() {
     let msg = SignalingMessage::Hello {
         peer_id: "test123".to_string(),
         roots: vec!["abc".to_string(), "def".to_string()],
+        hash_get: true,
     };
     let json = serde_json::to_string(&msg).unwrap();
     assert!(json.contains("\"type\":\"hello\""));

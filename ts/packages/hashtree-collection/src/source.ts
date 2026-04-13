@@ -60,11 +60,16 @@ export class CollectionSource {
       return 0;
     }
 
-    let count = 0;
-    for await (const _entry of this.byIdIndex.linksEntries(this.byIdRoot)) {
-      count += 1;
+    return await this.byIdIndex.countLinks(this.byIdRoot);
+  }
+
+  async sampleById(limit: number, random: () => number = Math.random): Promise<CollectionIndexLinkResult[]> {
+    if (!this.byIdRoot) {
+      return [];
     }
-    return count;
+
+    return (await this.byIdIndex.sampleLinks(this.byIdRoot, limit, { random }))
+      .map(([key, cid]) => ({ key, cid }));
   }
 
   async queryById(options: { prefix?: string; limit?: number } = {}): Promise<CollectionIndexLinkResult[]> {

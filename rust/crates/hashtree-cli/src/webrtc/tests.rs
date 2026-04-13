@@ -33,6 +33,7 @@ fn test_signaling_message_hello() {
     let msg = SignalingMessage::Hello {
         peer_id: "my-pubkey".to_string(),
         roots: Vec::new(),
+        hash_get: true,
     };
     assert_eq!(msg.msg_type(), "hello");
     assert_eq!(msg.peer_id(), "my-pubkey");

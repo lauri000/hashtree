@@ -83,8 +83,8 @@ const MAX_HASH_ATTEMPTS = 4; // Give up after this many attempts per hash
 const EXISTENCE_CHECK_THRESHOLD = 256 * 1024;
 
 /** Timeout for HEAD requests (5 seconds) */
-const HEAD_TIMEOUT_MS = 5000;
-const GET_TIMEOUT_MS = 5000;
+const HEAD_TIMEOUT_MS = 15_000;
+const GET_TIMEOUT_MS = 15_000;
 
 /** Per-hash failure tracking */
 interface HashAttempts {

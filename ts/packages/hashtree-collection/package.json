@@ -1,6 +1,6 @@
 {
   "name": "@hashtree/collection",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Immutable content-addressed collections and federated queries for hashtree",
   "type": "module",
   "main": "dist/index.js",

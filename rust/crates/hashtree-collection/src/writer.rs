@@ -204,22 +204,14 @@ impl<S: Store, T: Clone> CollectionWriter<S, T> {
     where
         I: IntoIterator<Item = (T, Cid)>,
     {
-        let mut final_entries = BTreeMap::<String, (T, Cid)>::new();
+        let mut final_entries = BTreeMap::<String, (T, Cid, Option<CollectionWriteContext>)>::new();
         for (item, cid) in entries {
             let next_item = self.normalize(&item)?;
             let id = self.definition.item_id(&next_item)?;
-            final_entries.insert(id, (next_item, cid));
+            final_entries.insert(id, (next_item, cid, None));
         }
 
-        if self.definition.search_indexes().is_empty() {
-            return self.rebuild_without_search(final_entries).await;
-        }
-
-        self.state = create_empty_collection_state(&self.definition);
-        for (_id, (item, cid)) in final_entries {
-            self.put_normalized_with_context(&item, &cid, None).await?;
-        }
-        Ok(self.snapshot())
+        self.rebuild_from_final_entries(final_entries).await
     }
 
     pub async fn reindex<I>(&mut self, entries: I) -> Result<CollectionState, CollectionError>
@@ -243,12 +235,7 @@ impl<S: Store, T: Clone> CollectionWriter<S, T> {
             final_entries.insert(id, (next_item, cid, context));
         }
 
-        self.state = create_empty_collection_state(&self.definition);
-        for (_id, (item, cid, context)) in final_entries {
-            self.put_normalized_with_context(&item, &cid, context.as_ref())
-                .await?;
-        }
-        Ok(self.snapshot())
+        self.rebuild_from_final_entries(final_entries).await
     }
 
     pub async fn reindex_with_context<I>(
@@ -422,7 +409,7 @@ impl<S: Store, T: Clone> CollectionWriter<S, T> {
 
     async fn rebuild_without_search(
         &mut self,
-        final_entries: BTreeMap<String, (T, Cid)>,
+        final_entries: BTreeMap<String, (T, Cid, Option<CollectionWriteContext>)>,
     ) -> Result<CollectionState, CollectionError> {
         let mut by_id = BTreeMap::<String, Cid>::new();
         let mut key_roots = self
@@ -432,7 +419,7 @@ impl<S: Store, T: Clone> CollectionWriter<S, T> {
             .map(|index| (index.name().to_string(), BTreeMap::<String, Cid>::new()))
             .collect::<BTreeMap<_, _>>();
 
-        for (id, (item, cid)) in final_entries {
+        for (id, (item, cid, _context)) in final_entries {
             by_id.insert(id, cid.clone());
             for index in self.definition.key_indexes() {
                 let root = key_roots
@@ -452,6 +439,104 @@ impl<S: Store, T: Clone> CollectionWriter<S, T> {
                 .build_links(key_roots.remove(index.name()).unwrap_or_default())
                 .await?;
             self.state.key_roots.insert(index.name().to_string(), root);
+        }
+
+        Ok(self.snapshot())
+    }
+
+    async fn rebuild_from_final_entries(
+        &mut self,
+        final_entries: BTreeMap<String, (T, Cid, Option<CollectionWriteContext>)>,
+    ) -> Result<CollectionState, CollectionError> {
+        if self.definition.search_indexes().is_empty() {
+            return self.rebuild_without_search(final_entries).await;
+        }
+
+        let mut by_id = BTreeMap::<String, Cid>::new();
+        let mut key_roots = self
+            .definition
+            .key_indexes()
+            .iter()
+            .map(|index| (index.name().to_string(), BTreeMap::<String, Cid>::new()))
+            .collect::<BTreeMap<_, _>>();
+        let mut search_root_entries = BTreeMap::<String, BTreeMap<String, Cid>>::new();
+
+        for (id, (item, cid, context)) in final_entries {
+            by_id.insert(id.clone(), cid.clone());
+
+            for index in self.definition.key_indexes() {
+                let root = key_roots
+                    .get_mut(index.name())
+                    .expect("collection key root must exist");
+                for key in index.materialize_keys(&item) {
+                    root.insert(key, cid.clone());
+                }
+            }
+
+            let entry_context = CollectionEntryContext {
+                id: &id,
+                cid: Some(&cid),
+                write_context: context.as_ref(),
+            };
+
+            for index in self.definition.search_indexes() {
+                let Some(search_index) = self.search_indexes.get(index.name()) else {
+                    continue;
+                };
+
+                let root_name = index.root_name().unwrap_or(index.name()).to_string();
+                let root_entries = search_root_entries.entry(root_name).or_default();
+
+                for entry in index.materialize_entries(&item, &entry_context) {
+                    let terms = search_index.parse_keywords(&entry.text);
+                    if terms.is_empty() {
+                        continue;
+                    }
+
+                    let entry_id = entry.id.as_deref().unwrap_or(&id);
+                    let Some(entry_cid) = entry.cid.as_ref().or(Some(&cid)) else {
+                        continue;
+                    };
+                    let default_prefix = default_search_prefix(index.name());
+                    let prefix = entry
+                        .prefix
+                        .as_deref()
+                        .or_else(|| index.prefix())
+                        .unwrap_or(&default_prefix);
+
+                    for term in terms {
+                        root_entries
+                            .insert(format!("{prefix}{term}:{entry_id}"), entry_cid.clone());
+                    }
+                }
+            }
+        }
+
+        self.state = create_empty_collection_state(&self.definition);
+        self.state.by_id_root = self.index.build_links(by_id).await?;
+        for index in self.definition.key_indexes() {
+            let root = self
+                .index
+                .build_links(key_roots.remove(index.name()).unwrap_or_default())
+                .await?;
+            self.state.key_roots.insert(index.name().to_string(), root);
+        }
+
+        let mut search_root_groups = BTreeMap::<String, Option<Cid>>::new();
+        for (root_name, root_entries) in search_root_entries {
+            let Some(search_index) = self.definition.search_indexes().iter().find_map(|index| {
+                ((index.root_name().unwrap_or(index.name())) == root_name)
+                    .then(|| self.search_indexes.get(index.name()))
+                    .flatten()
+            }) else {
+                continue;
+            };
+
+            search_root_groups.insert(root_name, search_index.build_links(root_entries).await?);
+        }
+
+        if !search_root_groups.is_empty() {
+            self.assign_search_root_groups(&search_root_groups);
         }
 
         Ok(self.snapshot())

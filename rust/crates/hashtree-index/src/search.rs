@@ -224,6 +224,13 @@ impl<S: hashtree_core::Store> SearchIndex<S> {
         Ok(self.btree.merge(base, other, prefer_other).await?)
     }
 
+    pub async fn build_links<I>(&self, items: I) -> Result<Option<Cid>, SearchError>
+    where
+        I: IntoIterator<Item = (String, Cid)>,
+    {
+        Ok(self.btree.build_links(items).await?)
+    }
+
     pub async fn index_link(
         &self,
         root: Option<&Cid>,

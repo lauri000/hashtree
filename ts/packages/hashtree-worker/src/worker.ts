@@ -111,6 +111,7 @@ interface MediaErrorResponse {
 }
 
 const MEDIA_CHUNK_SIZE = 64 * 1024;
+const MESH_READ_TIMEOUT_MS = 30_000;
 
 function getErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -315,7 +316,7 @@ function createMeshStore(): MeshRouterStore {
   return new MeshRouterStore({
     primary: createStorageStore(),
     primarySourceId: 'idb',
-    requestTimeoutMs: 5_500,
+    requestTimeoutMs: MESH_READ_TIMEOUT_MS,
     sources: [
       {
         id: 'p2p',

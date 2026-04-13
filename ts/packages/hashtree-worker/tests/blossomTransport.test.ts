@@ -88,7 +88,9 @@ describe('BlossomTransport.fetch', () => {
 
   it('limits concurrent read fetches across hashes', async () => {
     const base = 'https://throttled.example';
-    const hashes = Array.from({ length: 20 }, (_, index) => index.toString(16).padStart(64, '0'));
+    const concurrencyLimit = 32;
+    const hashes = Array.from({ length: concurrencyLimit + 8 }, (_, index) =>
+      index.toString(16).padStart(64, '0'));
     const releases: Array<() => void> = [];
     let active = 0;
     let maxActive = 0;
@@ -118,8 +120,8 @@ describe('BlossomTransport.fetch', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(fetchMock).toHaveBeenCalledTimes(12);
-    expect(maxActive).toBe(12);
+    expect(fetchMock).toHaveBeenCalledTimes(concurrencyLimit);
+    expect(maxActive).toBe(concurrencyLimit);
 
     while (fetchMock.mock.calls.length < hashes.length || active > 0) {
       const batch = releases.splice(0, releases.length);
@@ -134,7 +136,7 @@ describe('BlossomTransport.fetch', () => {
     }
 
     await expect(Promise.all(requests)).resolves.toEqual(Array(hashes.length).fill(null));
-    expect(maxActive).toBeLessThanOrEqual(12);
+    expect(maxActive).toBeLessThanOrEqual(concurrencyLimit);
   });
 
   it('reuses BlossomStore backoff so failed servers are skipped on immediate retries', async () => {

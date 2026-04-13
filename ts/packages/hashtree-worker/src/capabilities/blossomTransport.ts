@@ -14,7 +14,7 @@ import {
 
 export const DEFAULT_BLOSSOM_SERVERS: BlossomServerConfig[] = [];
 
-const MAX_CONCURRENT_READ_FETCHES = 12;
+const MAX_CONCURRENT_READ_FETCHES = 32;
 
 let activeReadFetches = 0;
 const pendingReadFetchWaiters: Array<() => void> = [];

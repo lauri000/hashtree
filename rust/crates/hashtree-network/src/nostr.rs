@@ -597,13 +597,9 @@ mod tests {
             .expect("hashGet tag");
         assert_eq!(hash_get_tag, "0");
 
-        let decoded = decode_signaling_event(
-            &event,
-            "receiver",
-            "receiver-pubkey",
-            &Keys::generate(),
-        )
-        .expect("decode hello");
+        let decoded =
+            decode_signaling_event(&event, "receiver", "receiver-pubkey", &Keys::generate())
+                .expect("decode hello");
 
         match decoded {
             SignalingMessage::Hello {
@@ -640,13 +636,9 @@ mod tests {
         .to_event(&sender_keys)
         .expect("build hello event");
 
-        let decoded = decode_signaling_event(
-            &event,
-            "receiver",
-            "receiver-pubkey",
-            &Keys::generate(),
-        )
-        .expect("decode hello");
+        let decoded =
+            decode_signaling_event(&event, "receiver", "receiver-pubkey", &Keys::generate())
+                .expect("decode hello");
 
         match decoded {
             SignalingMessage::Hello { hash_get, .. } => assert!(hash_get),

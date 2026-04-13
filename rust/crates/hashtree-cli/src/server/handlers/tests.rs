@@ -7,17 +7,19 @@ use crate::webrtc::{
     PeerTransport, WebRTCState,
 };
 use axum::{
-    body::{to_bytes, Body},
+    Router,
+    body::{Body, to_bytes},
     extract::{Path as AxumPath, State as AxumState},
     response::IntoResponse,
     routing::get,
-    Router,
 };
+use futures::{SinkExt, StreamExt};
 use hashtree_core::DirEntry;
 use http_body_util::BodyExt;
 use nostr::{
-    nips::nip19::ToBech32, Alphabet, EventBuilder, Keys, Kind, SingleLetterTag, Tag, TagKind,
-    Timestamp,
+    Alphabet, ClientMessage as NostrClientMessage, EventBuilder, JsonUtil as NostrJsonUtil, Keys,
+    Kind, RelayMessage as NostrRelayMessage, SingleLetterTag, Tag, TagKind, Timestamp,
+    nips::nip19::ToBech32,
 };
 use sha2::Digest;
 use std::{
@@ -27,6 +29,7 @@ use std::{
 };
 use tempfile::TempDir;
 use tokio::time::timeout;
+use tokio_tungstenite::{accept_async, tungstenite::Message as TungsteniteMessage};
 
 #[derive(Clone)]
 struct UpstreamBlobTestState {
@@ -171,6 +174,51 @@ async fn test_nostr_relay(dir: &TempDir, allowed_pubkey: String) -> Arc<NostrRel
         )
         .unwrap(),
     )
+}
+
+async fn spawn_mock_upstream_relay(events: Vec<nostr::Event>) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind relay");
+    let addr = listener.local_addr().expect("relay addr");
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept relay");
+        let ws = accept_async(stream).await.expect("accept websocket");
+        let (mut write, mut read) = ws.split();
+
+        while let Some(Ok(message)) = read.next().await {
+            let TungsteniteMessage::Text(text) = message else {
+                continue;
+            };
+            let Ok(parsed) = NostrClientMessage::from_json(text.as_bytes()) else {
+                continue;
+            };
+            if let NostrClientMessage::Req {
+                subscription_id,
+                filters,
+            } = parsed
+            {
+                for event in events
+                    .iter()
+                    .filter(|event| filters.iter().any(|filter| filter.match_event(event)))
+                {
+                    let _ = write
+                        .send(TungsteniteMessage::Text(
+                            NostrRelayMessage::event(subscription_id.clone(), event.clone())
+                                .as_json()
+                                .into(),
+                        ))
+                        .await;
+                }
+                let _ = write
+                    .send(TungsteniteMessage::Text(
+                        NostrRelayMessage::eose(subscription_id).as_json().into(),
+                    ))
+                    .await;
+            }
+        }
+    });
+    format!("ws://{}", addr)
 }
 
 #[tokio::test]
@@ -504,7 +552,7 @@ async fn resolve_thumbnail_path_prefers_root_thumbnail() {
     let (thumb_cid, _size) = tree.put(b"thumb").await.unwrap();
     let root_cid = tree
         .put_directory(vec![
-            DirEntry::from_cid("thumbnail.jpg", &thumb_cid).with_link_type(LinkType::File)
+            DirEntry::from_cid("thumbnail.jpg", &thumb_cid).with_link_type(LinkType::File),
         ])
         .await
         .unwrap();
@@ -525,7 +573,7 @@ async fn resolve_thumbnail_path_accepts_generic_image_names() {
     let (thumb_cid, _size) = tree.put(b"thumb").await.unwrap();
     let root_cid = tree
         .put_directory(vec![
-            DirEntry::from_cid("cover.jpeg", &thumb_cid).with_link_type(LinkType::File)
+            DirEntry::from_cid("cover.jpeg", &thumb_cid).with_link_type(LinkType::File),
         ])
         .await
         .unwrap();
@@ -546,7 +594,7 @@ async fn resolve_thumbnail_path_falls_back_to_subdir() {
     let (thumb_cid, _size) = tree.put(b"thumb").await.unwrap();
     let subdir_cid = tree
         .put_directory(vec![
-            DirEntry::from_cid("thumbnail.png", &thumb_cid).with_link_type(LinkType::File)
+            DirEntry::from_cid("thumbnail.png", &thumb_cid).with_link_type(LinkType::File),
         ])
         .await
         .unwrap();
@@ -575,13 +623,13 @@ async fn resolve_thumbnail_path_fetches_missing_subdir_from_upstream() {
     let (thumb_cid, _size) = source_tree.put(b"thumb").await.unwrap();
     let subdir_cid = source_tree
         .put_directory(vec![
-            DirEntry::from_cid("thumbnail.jpg", &thumb_cid).with_link_type(LinkType::File)
+            DirEntry::from_cid("thumbnail.jpg", &thumb_cid).with_link_type(LinkType::File),
         ])
         .await
         .unwrap();
     let root_cid = source_tree
         .put_directory(vec![
-            DirEntry::from_cid("clip", &subdir_cid).with_link_type(LinkType::Dir)
+            DirEntry::from_cid("clip", &subdir_cid).with_link_type(LinkType::Dir),
         ])
         .await
         .unwrap();
@@ -620,7 +668,7 @@ async fn resolve_directory_target_prefers_root_index() {
     let (index_cid, _size) = tree.put(b"<html>ok</html>").await.unwrap();
     let root_cid = tree
         .put_directory(vec![
-            DirEntry::from_cid("index.html", &index_cid).with_link_type(LinkType::File)
+            DirEntry::from_cid("index.html", &index_cid).with_link_type(LinkType::File),
         ])
         .await
         .unwrap();
@@ -649,13 +697,13 @@ async fn resolve_directory_target_prefers_subdir_index() {
     let (index_cid, _size) = tree.put(b"<html>nested</html>").await.unwrap();
     let subdir_cid = tree
         .put_directory(vec![
-            DirEntry::from_cid("index.html", &index_cid).with_link_type(LinkType::File)
+            DirEntry::from_cid("index.html", &index_cid).with_link_type(LinkType::File),
         ])
         .await
         .unwrap();
     let root_cid = tree
         .put_directory(vec![
-            DirEntry::from_cid("video", &subdir_cid).with_link_type(LinkType::Dir)
+            DirEntry::from_cid("video", &subdir_cid).with_link_type(LinkType::Dir),
         ])
         .await
         .unwrap();
@@ -684,7 +732,7 @@ async fn resolve_directory_target_lists_directory_without_index() {
     let (file_cid, _size) = tree.put(b"asset").await.unwrap();
     let root_cid = tree
         .put_directory(vec![
-            DirEntry::from_cid("asset.txt", &file_cid).with_link_type(LinkType::File)
+            DirEntry::from_cid("asset.txt", &file_cid).with_link_type(LinkType::File),
         ])
         .await
         .unwrap();
@@ -780,7 +828,7 @@ async fn htree_nhash_path_resolves_thumbnail_alias() {
     let (thumb_cid, _) = tree.put(&thumb_bytes).await.unwrap();
     let root_cid = tree
         .put_directory(vec![
-            DirEntry::from_cid("thumbnail.jpg", &thumb_cid).with_link_type(LinkType::File)
+            DirEntry::from_cid("thumbnail.jpg", &thumb_cid).with_link_type(LinkType::File),
         ])
         .await
         .unwrap();
@@ -913,16 +961,14 @@ async fn htree_npub_path_range_fetches_missing_nested_file_from_upstream() {
     let (video_cid, _) = source_tree.put(&video_data).await.unwrap();
     let child_dir_cid = source_tree
         .put_directory(vec![
-            DirEntry::from_cid("video.mp4", &video_cid).with_link_type(LinkType::File)
+            DirEntry::from_cid("video.mp4", &video_cid).with_link_type(LinkType::File),
         ])
         .await
         .unwrap();
     let root_cid = source_tree
-        .put_directory(vec![DirEntry::from_cid(
-            "video_1767136282070",
-            &child_dir_cid,
-        )
-        .with_link_type(LinkType::Dir)])
+        .put_directory(vec![
+            DirEntry::from_cid("video_1767136282070", &child_dir_cid).with_link_type(LinkType::Dir),
+        ])
         .await
         .unwrap();
 
@@ -989,16 +1035,14 @@ async fn htree_npub_path_range_fetches_missing_nested_file_chunks_from_upstream(
     let (video_cid, _) = source_tree.put(&video_data).await.unwrap();
     let child_dir_cid = source_tree
         .put_directory(vec![
-            DirEntry::from_cid("video.mp4", &video_cid).with_link_type(LinkType::File)
+            DirEntry::from_cid("video.mp4", &video_cid).with_link_type(LinkType::File),
         ])
         .await
         .unwrap();
     let root_cid = source_tree
-        .put_directory(vec![DirEntry::from_cid(
-            "video_1767136255334",
-            &child_dir_cid,
-        )
-        .with_link_type(LinkType::Dir)])
+        .put_directory(vec![
+            DirEntry::from_cid("video_1767136255334", &child_dir_cid).with_link_type(LinkType::Dir),
+        ])
         .await
         .unwrap();
 
@@ -1063,22 +1107,21 @@ async fn htree_npub_path_uses_original_uri_for_encoded_tree_names() {
     let asset_bytes = b"nostr-vpn-macos-zip".to_vec();
     let (asset_cid, _) = tree.put(&asset_bytes).await.unwrap();
     let assets_dir = tree
-        .put_directory(vec![DirEntry::from_cid(
-            "nostr-vpn-v0.3.0-macos-arm64.zip",
-            &asset_cid,
-        )
-        .with_link_type(LinkType::File)])
+        .put_directory(vec![
+            DirEntry::from_cid("nostr-vpn-v0.3.0-macos-arm64.zip", &asset_cid)
+                .with_link_type(LinkType::File),
+        ])
         .await
         .unwrap();
     let version_dir = tree
         .put_directory(vec![
-            DirEntry::from_cid("assets", &assets_dir).with_link_type(LinkType::Dir)
+            DirEntry::from_cid("assets", &assets_dir).with_link_type(LinkType::Dir),
         ])
         .await
         .unwrap();
     let root_cid = tree
         .put_directory(vec![
-            DirEntry::from_cid("v0.3.0", &version_dir).with_link_type(LinkType::Dir)
+            DirEntry::from_cid("v0.3.0", &version_dir).with_link_type(LinkType::Dir),
         ])
         .await
         .unwrap();
@@ -1217,6 +1260,55 @@ async fn resolve_root_offline_accepts_npub_owner_for_local_relay_events() {
     );
 }
 
+#[tokio::test]
+async fn nostr_profile_queries_upstream_relays_after_local_miss() {
+    let temp_dir = TempDir::new().unwrap();
+    let store = Arc::new(HashtreeStore::new(temp_dir.path().join("db")).unwrap());
+    let keys = Keys::generate();
+    let relay = test_nostr_relay(&temp_dir, keys.public_key().to_hex()).await;
+    let event = EventBuilder::new(
+        Kind::Metadata,
+        serde_json::json!({
+            "display_name": "Sirius Business",
+            "picture": "https://example.com/avatar.png",
+        })
+        .to_string(),
+        [],
+    )
+    .custom_created_at(Timestamp::from_secs(42))
+    .to_event(&keys)
+    .unwrap();
+    let upstream_url = spawn_mock_upstream_relay(vec![event.clone()]).await;
+    let mut state = test_app_state(store, Vec::new());
+    state.nostr_relay = Some(relay.clone());
+    state.nostr_relay_urls = vec![upstream_url];
+
+    let response = nostr_profile(AxumState(state), AxumPath(keys.public_key().to_hex()))
+        .await
+        .into_response();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        payload["profile"]["display_name"].as_str(),
+        Some("Sirius Business")
+    );
+    assert_eq!(payload["created_at"].as_u64(), Some(42));
+
+    let cached = relay
+        .query_events(
+            &nostr::Filter::new()
+                .author(keys.public_key())
+                .kind(Kind::Metadata)
+                .limit(10),
+            10,
+        )
+        .await;
+    assert_eq!(cached.len(), 1);
+    assert_eq!(cached[0].id, event.id);
+}
+
 #[test]
 fn resolver_config_prefers_state_relay_urls() {
     let temp_dir = TempDir::new().unwrap();
@@ -1340,6 +1432,73 @@ async fn resolve_to_hash_refresh_uses_local_relay_before_relays() {
 }
 
 #[tokio::test]
+async fn resolve_to_hash_refresh_uses_upstream_relays_after_local_miss() {
+    let temp_dir = TempDir::new().unwrap();
+    let store = Arc::new(HashtreeStore::new(temp_dir.path().join("db")).unwrap());
+    let keys = Keys::generate();
+    let relay = test_nostr_relay(&temp_dir, keys.public_key().to_hex()).await;
+    let tree_name = "video";
+    let refreshed_hash = "33".repeat(32);
+
+    let event = EventBuilder::new(
+        Kind::Custom(30078),
+        "",
+        [
+            Tag::identifier(tree_name.to_string()),
+            Tag::custom(
+                TagKind::SingleLetter(SingleLetterTag::lowercase(Alphabet::L)),
+                vec!["hashtree".to_string()],
+            ),
+            Tag::custom(TagKind::Custom("hash".into()), vec![refreshed_hash.clone()]),
+        ],
+    )
+    .to_event(&keys)
+    .unwrap();
+    let upstream_url = spawn_mock_upstream_relay(vec![event.clone()]).await;
+
+    let mut state = test_app_state(store, Vec::new());
+    state.nostr_relay = Some(relay.clone());
+    state.nostr_relay_urls = vec![upstream_url];
+
+    let refresh = resolve_to_hash(
+        State(state),
+        OriginalUri(
+            format!(
+                "/api/resolve/{}/{}",
+                keys.public_key().to_bech32().unwrap(),
+                tree_name
+            )
+            .parse()
+            .unwrap(),
+        ),
+        Path((
+            keys.public_key().to_bech32().unwrap(),
+            tree_name.to_string(),
+        )),
+        Query(HashMap::from([("refresh".to_string(), "1".to_string())])),
+    )
+    .await
+    .into_response();
+    let refresh_body = to_bytes(refresh.into_body(), usize::MAX).await.unwrap();
+    let refresh_json: serde_json::Value = serde_json::from_slice(&refresh_body).unwrap();
+    assert_eq!(refresh_json["hash"], refreshed_hash);
+    assert_eq!(refresh_json["source"], "nostr-relay");
+    assert_eq!(refresh_json["event_id"], event.id.to_hex());
+
+    let cached = relay
+        .query_events(
+            &nostr::Filter::new()
+                .author(keys.public_key())
+                .kind(Kind::Custom(30078))
+                .limit(10),
+            10,
+        )
+        .await;
+    assert_eq!(cached.len(), 1);
+    assert_eq!(cached[0].id, event.id);
+}
+
+#[tokio::test]
 async fn htree_npub_path_thumbnail_does_not_fall_back_to_historical_root() {
     let temp_dir = TempDir::new().unwrap();
     let store = Arc::new(HashtreeStore::new(temp_dir.path().join("db")).unwrap());
@@ -1351,14 +1510,14 @@ async fn htree_npub_path_thumbnail_does_not_fall_back_to_historical_root() {
     let (thumb_cid, _) = tree.put(&thumb_bytes).await.unwrap();
     let historical_root = tree
         .put_directory(vec![
-            DirEntry::from_cid("thumbnail.jpg", &thumb_cid).with_link_type(LinkType::File)
+            DirEntry::from_cid("thumbnail.jpg", &thumb_cid).with_link_type(LinkType::File),
         ])
         .await
         .unwrap();
     let (video_cid, _) = tree.put(b"video-data").await.unwrap();
     let current_root = tree
         .put_directory(vec![
-            DirEntry::from_cid("video.mp4", &video_cid).with_link_type(LinkType::File)
+            DirEntry::from_cid("video.mp4", &video_cid).with_link_type(LinkType::File),
         ])
         .await
         .unwrap();
@@ -1465,11 +1624,13 @@ async fn cache_tree_root_public_chk_uses_plain_mutable_cache_key() {
         cached.cid.key.map(|key| to_hex(&key)).as_deref(),
         Some("34e24fadaddc60da2e761501aae44c1c2b6b8706b73dff736eb0fc7d803133bb")
     );
-    assert!(get_cached_tree_root(
-        &state,
-        "npub1example/video?k=34e24fadaddc60da2e761501aae44c1c2b6b8706b73dff736eb0fc7d803133bb"
-    )
-    .is_none());
+    assert!(
+        get_cached_tree_root(
+            &state,
+            "npub1example/video?k=34e24fadaddc60da2e761501aae44c1c2b6b8706b73dff736eb0fc7d803133bb"
+        )
+        .is_none()
+    );
 }
 
 #[tokio::test]

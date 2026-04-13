@@ -1,9 +1,19 @@
-import { HashTree, LinkType, type CID, type Store, type TreeEntry } from '@hashtree/core';
+import { HashTree, LinkType, toHex, type CID, type Store, type TreeEntry } from '@hashtree/core';
 
 export interface BTreeOptions {
   /** Max entries per node before splitting. Default: 32 */
   order?: number;
 }
+
+export interface BTreeSampleOptions {
+  totalCount?: number;
+  random?: () => number;
+}
+
+type LinkTraversalCache = {
+  entries: Map<string, TreeEntry[]>;
+  counts: Map<string, number>;
+};
 
 export class BTree {
   private tree: HashTree;
@@ -32,10 +42,20 @@ export class BTree {
     const result = await this.insertRecursive(root, key, value);
 
     if (result.split) {
-      let newRoot = (await this.tree.putDirectory([])).cid;
-      newRoot = await this.tree.setEntry(newRoot, [], escapeKey(result.split.leftFirstKey), result.split.left, 0, LinkType.Dir);
-      newRoot = await this.tree.setEntry(newRoot, [], escapeKey(result.split.rightFirstKey), result.split.right, 0, LinkType.Dir);
-      return newRoot;
+      return (await this.tree.putDirectory([
+        {
+          name: escapeKey(result.split.leftFirstKey),
+          cid: result.split.left,
+          size: 0,
+          type: LinkType.Dir,
+        },
+        {
+          name: escapeKey(result.split.rightFirstKey),
+          cid: result.split.right,
+          size: 0,
+          type: LinkType.Dir,
+        },
+      ])).cid;
     }
 
     return result.cid;
@@ -82,10 +102,20 @@ export class BTree {
     const result = await this.insertLinkRecursive(root, key, targetCid);
 
     if (result.split) {
-      let newRoot = (await this.tree.putDirectory([])).cid;
-      newRoot = await this.tree.setEntry(newRoot, [], escapeKey(result.split.leftFirstKey), result.split.left, 0, LinkType.Dir);
-      newRoot = await this.tree.setEntry(newRoot, [], escapeKey(result.split.rightFirstKey), result.split.right, 0, LinkType.Dir);
-      return newRoot;
+      return (await this.tree.putDirectory([
+        {
+          name: escapeKey(result.split.leftFirstKey),
+          cid: result.split.left,
+          size: 0,
+          type: LinkType.Dir,
+        },
+        {
+          name: escapeKey(result.split.rightFirstKey),
+          cid: result.split.right,
+          size: 0,
+          type: LinkType.Dir,
+        },
+      ])).cid;
     }
 
     return result.cid;
@@ -125,6 +155,64 @@ export class BTree {
   async *prefixLinks(root: CID, prefix: string): AsyncGenerator<[string, CID]> {
     const endPrefix = incrementPrefix(prefix);
     yield* this.rangeLinkTraverse(root, prefix, endPrefix);
+  }
+
+  /**
+   * Count CID links in the tree.
+   */
+  async countLinks(root: CID | null): Promise<number> {
+    if (!root) {
+      return 0;
+    }
+
+    return await this.countLinksRecursive(root, createLinkTraversalCache());
+  }
+
+  /**
+   * Read the Nth CID link in sorted key order.
+   */
+  async getLinkEntryAt(root: CID | null, ordinal: number): Promise<[string, CID] | null> {
+    if (!root || ordinal < 0) {
+      return null;
+    }
+
+    return await this.getLinkEntryAtRecursive(root, Math.floor(ordinal), createLinkTraversalCache());
+  }
+
+  /**
+   * Sample CID links uniformly by random ordinal.
+   */
+  async sampleLinks(root: CID | null, limit: number, options: BTreeSampleOptions = {}): Promise<Array<[string, CID]>> {
+    if (!root) {
+      return [];
+    }
+
+    const effectiveLimit = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
+    if (effectiveLimit === 0) {
+      return [];
+    }
+
+    const cache = createLinkTraversalCache();
+    const totalCount = Number.isFinite(options.totalCount)
+      ? Math.max(0, Math.floor(options.totalCount ?? 0))
+      : await this.countLinksRecursive(root, cache);
+
+    if (totalCount === 0) {
+      return [];
+    }
+
+    const targetCount = Math.min(totalCount, effectiveLimit);
+    const ordinals = sampleUniqueIntegers(totalCount, targetCount, options.random ?? Math.random);
+    const results: Array<[string, CID]> = [];
+
+    for (const ordinal of ordinals) {
+      const entry = await this.getLinkEntryAtRecursive(root, ordinal, cache);
+      if (entry) {
+        results.push(entry);
+      }
+    }
+
+    return results;
   }
 
   /**
@@ -247,13 +335,12 @@ export class BTree {
   }
 
   private async createLeafWithLink(items: Array<[string, CID]>): Promise<CID> {
-    let node = (await this.tree.putDirectory([])).cid;
-
-    for (const [key, targetCid] of items) {
-      node = await this.tree.setEntry(node, [], escapeKey(key), targetCid, 0, LinkType.File);
-    }
-
-    return node;
+    return (await this.tree.putDirectory(items.map(([key, targetCid]) => ({
+      name: escapeKey(key),
+      cid: targetCid,
+      size: 0,
+      type: LinkType.File,
+    })))).cid;
   }
 
   private async insertLinkRecursive(
@@ -319,15 +406,8 @@ export class BTree {
     const leftEntries = sorted.slice(0, mid);
     const rightEntries = sorted.slice(mid);
 
-    let left = (await this.tree.putDirectory([])).cid;
-    for (const entry of leftEntries) {
-      left = await this.tree.setEntry(left, [], entry.name, entry.cid, entry.size, entry.type);
-    }
-
-    let right = (await this.tree.putDirectory([])).cid;
-    for (const entry of rightEntries) {
-      right = await this.tree.setEntry(right, [], entry.name, entry.cid, entry.size, entry.type);
-    }
+    const left = (await this.tree.putDirectory(leftEntries)).cid;
+    const right = (await this.tree.putDirectory(rightEntries)).cid;
 
     return {
       left,
@@ -384,6 +464,60 @@ export class BTree {
         yield* this.rangeLinkTraverse(child.cid, start, end);
       }
     }
+  }
+
+  private async countLinksRecursive(node: CID, cache: LinkTraversalCache): Promise<number> {
+    const cacheKey = cidCacheKey(node);
+    const cached = cache.counts.get(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const entries = await this.listCachedEntries(node, cache);
+    const count = this.isLeafNode(entries)
+      ? entries.filter((entry) => entry.type === LinkType.File).length
+      : (await Promise.all(entries.map(async (entry) => await this.countLinksRecursive(entry.cid, cache))))
+        .reduce((sum, childCount) => sum + childCount, 0);
+
+    cache.counts.set(cacheKey, count);
+    return count;
+  }
+
+  private async getLinkEntryAtRecursive(
+    node: CID,
+    ordinal: number,
+    cache: LinkTraversalCache
+  ): Promise<[string, CID] | null> {
+    const entries = await this.listCachedEntries(node, cache);
+
+    if (this.isLeafNode(entries)) {
+      const links = entries.filter((entry) => entry.type === LinkType.File);
+      const entry = links[ordinal];
+      return entry ? [unescapeKey(entry.name), entry.cid] : null;
+    }
+
+    let remaining = ordinal;
+    for (const entry of entries) {
+      const childCount = await this.countLinksRecursive(entry.cid, cache);
+      if (remaining < childCount) {
+        return await this.getLinkEntryAtRecursive(entry.cid, remaining, cache);
+      }
+      remaining -= childCount;
+    }
+
+    return null;
+  }
+
+  private async listCachedEntries(node: CID, cache: LinkTraversalCache): Promise<TreeEntry[]> {
+    const cacheKey = cidCacheKey(node);
+    const cached = cache.entries.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const entries = this.sortEntries(await this.tree.listDirectory(node));
+    cache.entries.set(cacheKey, entries);
+    return entries;
   }
 
   // ============ Original Private Methods ============
@@ -452,15 +586,14 @@ export class BTree {
     const leftEntries = sorted.slice(0, mid);
     const rightEntries = sorted.slice(mid);
 
-    let left = (await this.tree.putDirectory([])).cid;
-    for (const entry of leftEntries) {
-      left = await this.tree.setEntry(left, [], entry.name, entry.cid, entry.size, LinkType.Blob);
-    }
-
-    let right = (await this.tree.putDirectory([])).cid;
-    for (const entry of rightEntries) {
-      right = await this.tree.setEntry(right, [], entry.name, entry.cid, entry.size, LinkType.Blob);
-    }
+    const left = (await this.tree.putDirectory(leftEntries.map((entry) => ({
+      ...entry,
+      type: LinkType.Blob,
+    })))).cid;
+    const right = (await this.tree.putDirectory(rightEntries.map((entry) => ({
+      ...entry,
+      type: LinkType.Blob,
+    })))).cid;
 
     return {
       left,
@@ -476,15 +609,16 @@ export class BTree {
     const leftEntries = sorted.slice(0, mid);
     const rightEntries = sorted.slice(mid);
 
-    let left = (await this.tree.putDirectory([])).cid;
-    for (const entry of leftEntries) {
-      left = await this.tree.setEntry(left, [], entry.name, entry.cid, 0, LinkType.Dir);
-    }
-
-    let right = (await this.tree.putDirectory([])).cid;
-    for (const entry of rightEntries) {
-      right = await this.tree.setEntry(right, [], entry.name, entry.cid, 0, LinkType.Dir);
-    }
+    const left = (await this.tree.putDirectory(leftEntries.map((entry) => ({
+      ...entry,
+      size: 0,
+      type: LinkType.Dir,
+    })))).cid;
+    const right = (await this.tree.putDirectory(rightEntries.map((entry) => ({
+      ...entry,
+      size: 0,
+      type: LinkType.Dir,
+    })))).cid;
 
     return {
       left,
@@ -685,6 +819,70 @@ export function escapeKey(key: string): string {
     .replace(/%/g, '%25')
     .replace(/\//g, '%2F')
     .replace(/\0/g, '%00');
+}
+
+function createLinkTraversalCache(): LinkTraversalCache {
+  return {
+    entries: new Map(),
+    counts: new Map(),
+  };
+}
+
+function cidCacheKey(cid: CID): string {
+  return `${toHex(cid.hash)}:${cid.key ? toHex(cid.key) : ''}`;
+}
+
+function sampleUniqueIntegers(total: number, limit: number, random: () => number): number[] {
+  const effectiveTotal = Number.isFinite(total) ? Math.max(0, Math.floor(total)) : 0;
+  const effectiveLimit = Number.isFinite(limit)
+    ? Math.min(effectiveTotal, Math.max(0, Math.floor(limit)))
+    : effectiveTotal;
+
+  if (effectiveTotal === 0 || effectiveLimit === 0) {
+    return [];
+  }
+
+  if (effectiveLimit >= effectiveTotal) {
+    return shuffleItems(
+      Array.from({ length: effectiveTotal }, (_, index) => index),
+      random,
+    );
+  }
+
+  const selected = new Set<number>();
+  let attempts = 0;
+  const maxAttempts = Math.max(effectiveLimit * 8, 32);
+
+  while (selected.size < effectiveLimit && attempts < maxAttempts) {
+    selected.add(Math.floor(random() * effectiveTotal));
+    attempts += 1;
+  }
+
+  if (selected.size < effectiveLimit) {
+    const remaining: number[] = [];
+    for (let index = 0; index < effectiveTotal; index += 1) {
+      if (!selected.has(index)) {
+        remaining.push(index);
+      }
+    }
+    for (const index of shuffleItems(remaining, random)) {
+      selected.add(index);
+      if (selected.size >= effectiveLimit) {
+        break;
+      }
+    }
+  }
+
+  return shuffleItems([...selected], random);
+}
+
+function shuffleItems<T>(items: T[], random: () => number): T[] {
+  const shuffled = [...items];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(random() * (index + 1));
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+  return shuffled;
 }
 
 export function unescapeKey(name: string): string {
