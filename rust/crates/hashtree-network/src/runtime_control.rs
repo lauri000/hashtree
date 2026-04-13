@@ -146,10 +146,17 @@ where
         source
     );
     let peer_id = msg.peer_id().to_string();
+    let peer_hash_get = match &msg {
+        SignalingMessage::Hello { hash_get, .. } => Some(*hash_get),
+        _ => None,
+    };
     shared_router
         .handle_message(msg)
         .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    if let Some(hash_get) = peer_hash_get {
+        runtime.set_peer_hash_get(&peer_id, hash_get).await;
+    }
     remember_peer_signal_path(runtime.peers.as_ref(), &peer_id, source).await;
 
     Ok(())
@@ -344,6 +351,7 @@ async fn remove_peer_from_runtime<P, R, F>(
         let mut peers = runtime.peers.write().await;
         peers.remove(&peer_key)
     };
+    runtime.clear_peer_hash_get(&peer_key).await;
     if let Some(entry) = removed {
         if entry.state == ConnectionState::Connected {
             runtime

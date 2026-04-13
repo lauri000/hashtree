@@ -22,6 +22,7 @@ use crate::app::args::{Cli, Commands};
 use crate::app::mount_registry::ActiveMount;
 use clap::{CommandFactory, Parser};
 use hashtree_cli::{Config as AppConfig, FetchConfig, Fetcher, HashtreeStore};
+use hashtree_cli::config::ServerMode;
 use hashtree_core::{nhash_decode, Cid};
 use nostr::Kind;
 #[cfg(feature = "fuse")]
@@ -40,6 +41,7 @@ fn test_build_daemon_args_with_overrides() {
     let args = args_to_strings(build_daemon_args(
         "127.0.0.1:8080",
         Some("wss://relay.example"),
+        Some(ServerMode::Assist),
         Some(&data_dir),
     ));
 
@@ -50,6 +52,8 @@ fn test_build_daemon_args_with_overrides() {
             "127.0.0.1:8080",
             "--relays",
             "wss://relay.example",
+            "--mode",
+            "assist",
             "--data-dir",
             "data-dir",
         ]
@@ -58,7 +62,7 @@ fn test_build_daemon_args_with_overrides() {
 
 #[test]
 fn test_build_daemon_args_minimal() {
-    let args = args_to_strings(build_daemon_args("0.0.0.0:8080", None, None));
+    let args = args_to_strings(build_daemon_args("0.0.0.0:8080", None, None, None));
     assert_eq!(args, vec!["--addr", "0.0.0.0:8080"]);
 }
 

@@ -66,6 +66,7 @@ interface WorkerPeer {
   peerId: string;
   pubkey: string;
   pool: PeerPool;
+  hashGet: boolean;
   direction: 'inbound' | 'outbound';
   state: 'connecting' | 'connected' | 'disconnected';
   dataChannelReady: boolean;
@@ -224,6 +225,7 @@ export class WebRTCController {
     const msg: SignalingMessage = {
       type: 'hello',
       peerId: this.myPeerId.toString(),
+      hashGet: true,
     };
     this.sendSignaling(msg).catch(err => {
       console.error('[WebRTC] sendSignaling error:', err);
@@ -248,7 +250,7 @@ export class WebRTCController {
 
     switch (msg.type) {
       case 'hello':
-        await this.handleHello(senderPubkey);
+        await this.handleHello(senderPubkey, msg.hashGet !== false);
         break;
 
       case 'offer':
@@ -309,11 +311,13 @@ export class WebRTCController {
     return true;
   }
 
-  private async handleHello(senderPubkey: string): Promise<void> {
+  private async handleHello(senderPubkey: string, hashGet: boolean): Promise<void> {
     const peerId = new PeerId(senderPubkey).toString();
 
     // Already connected?
-    if (this.peers.has(peerId)) {
+    const existing = this.peers.get(peerId);
+    if (existing) {
+      existing.hashGet = hashGet;
       return;
     }
 
@@ -334,7 +338,7 @@ export class WebRTCController {
     const shouldInitiate = this.myPeerId.toString() < peerId;
     if (shouldInitiate) {
       this.log(`Initiating connection to ${peerId.slice(0, 20)}`);
-      await this.createOutboundPeer(peerId, senderPubkey, pool);
+      await this.createOutboundPeer(peerId, senderPubkey, pool, hashGet);
     } else {
       this.log(`Waiting for offer from ${peerId.slice(0, 20)}`);
     }
@@ -427,11 +431,18 @@ export class WebRTCController {
     return false;
   }
 
-  private createPeer(peerId: string, pubkey: string, pool: PeerPool, direction: 'inbound' | 'outbound'): WorkerPeer {
+  private createPeer(
+    peerId: string,
+    pubkey: string,
+    pool: PeerPool,
+    direction: 'inbound' | 'outbound',
+    hashGet: boolean = true
+  ): WorkerPeer {
     const peer: WorkerPeer = {
       peerId,
       pubkey,
       pool,
+      hashGet,
       direction,
       state: 'connecting',
       dataChannelReady: false,
@@ -477,8 +488,13 @@ export class WebRTCController {
     return peer;
   }
 
-  private async createOutboundPeer(peerId: string, pubkey: string, pool: PeerPool): Promise<void> {
-    this.createPeer(peerId, pubkey, pool, 'outbound');
+  private async createOutboundPeer(
+    peerId: string,
+    pubkey: string,
+    pool: PeerPool,
+    hashGet: boolean
+  ): Promise<void> {
+    this.createPeer(peerId, pubkey, pool, 'outbound', hashGet);
     // Proxy will create peer and we'll get rtc:peerCreated, then request offer
   }
 
@@ -728,7 +744,7 @@ export class WebRTCController {
 
   private orderedConnectedPeers(excludePeerId?: string): WorkerPeer[] {
     const connectedAll = Array.from(this.peers.values())
-      .filter((peer) => peer.dataChannelReady);
+      .filter((peer) => peer.dataChannelReady && peer.hashGet);
     if (connectedAll.length === 0) return [];
 
     const peerIds = connectedAll.map((peer) => peer.peerId);

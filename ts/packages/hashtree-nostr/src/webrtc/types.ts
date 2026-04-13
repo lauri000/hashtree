@@ -18,6 +18,7 @@ export interface HelloMessage {
   type: 'hello';
   peerId: string;
   roots?: string[];
+  hashGet?: boolean;
 }
 
 export interface OfferMessage {
@@ -319,6 +320,7 @@ export interface PeerStatus {
   isSelf?: boolean;
   pool?: PeerPool;
   isConnected?: boolean; // True when peer connection AND data channel are ready
+  hashGet?: boolean;
 }
 
 export type WebRTCStoreEvent =

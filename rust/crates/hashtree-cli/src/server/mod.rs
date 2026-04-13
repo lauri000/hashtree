@@ -102,6 +102,8 @@ impl HashtreeServer {
             state: AppState {
                 store,
                 auth: None,
+                peer_mode: crate::config::ServerMode::Normal,
+                hash_get_enabled: true,
                 webrtc_peers: None,
                 ws_relay: Arc::new(auth::WsRelayState::new()),
                 max_upload_bytes: 5 * 1024 * 1024, // 5 MB default
@@ -139,6 +141,16 @@ impl HashtreeServer {
     /// When false, only social graph members can write
     pub fn with_public_writes(mut self, public: bool) -> Self {
         self.state.public_writes = public;
+        self
+    }
+
+    pub fn with_server_mode(mut self, mode: crate::config::ServerMode) -> Self {
+        self.state.peer_mode = mode;
+        self
+    }
+
+    pub fn with_hash_get_enabled(mut self, enabled: bool) -> Self {
+        self.state.hash_get_enabled = enabled;
         self
     }
 

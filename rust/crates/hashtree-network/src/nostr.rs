@@ -17,6 +17,15 @@ use crate::types::{SignalingMessage, NOSTR_KIND_HASHTREE};
 
 /// Hello tag for broadcast peer discovery
 const HELLO_TAG: &str = "hello";
+const HASH_GET_TAG: &str = "hashGet";
+
+fn decode_hash_get_tag(tag_value: Option<String>) -> bool {
+    match tag_value.as_deref() {
+        Some("0" | "false" | "FALSE" | "no" | "NO") => false,
+        Some("1" | "true" | "TRUE" | "yes" | "YES") | None => true,
+        Some(_) => true,
+    }
+}
 
 /// Decode a Nostr signaling event into a mesh signaling message.
 pub fn decode_signaling_event(
@@ -57,6 +66,7 @@ pub fn decode_signaling_event(
         return Some(SignalingMessage::Hello {
             peer_id: sender_pubkey,
             roots: vec![],
+            hash_get: decode_hash_get_tag(get_tag(HASH_GET_TAG)),
         });
     }
 
@@ -128,6 +138,10 @@ pub fn encode_signaling_event(
             .map_err(|e| TransportError::SendFailed(e.to_string()));
     }
 
+    let hash_get = match msg {
+        SignalingMessage::Hello { hash_get, .. } => *hash_get,
+        _ => true,
+    };
     let expiration = Timestamp::now() + Duration::from_secs(5 * 60);
     let tags = vec![
         Tag::custom(
@@ -139,6 +153,10 @@ pub fn encode_signaling_event(
         Tag::custom(
             nostr_sdk::TagKind::Custom(std::borrow::Cow::Borrowed("peerId")),
             vec![local_peer_id.to_string()],
+        ),
+        Tag::custom(
+            nostr_sdk::TagKind::Custom(std::borrow::Cow::Borrowed(HASH_GET_TAG)),
+            vec![if hash_get { "1" } else { "0" }.to_string()],
         ),
         Tag::expiration(expiration),
     ];
@@ -442,9 +460,12 @@ fn normalize_signaling_message(
         .to_string();
 
     Some(match msg {
-        SignalingMessage::Hello { roots, .. } => SignalingMessage::Hello {
+        SignalingMessage::Hello {
+            roots, hash_get, ..
+        } => SignalingMessage::Hello {
             peer_id: sender_peer_id,
             roots,
+            hash_get,
         },
         SignalingMessage::Offer {
             target_peer_id,
@@ -543,6 +564,93 @@ mod tests {
                 assert_eq!(sdp, "test-sdp");
             }
             other => panic!("expected offer, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hello_events_encode_and_decode_hash_get_capability() {
+        let sender_keys = Keys::generate();
+        let sender_peer_id = sender_keys.public_key().to_hex();
+        let msg = SignalingMessage::Hello {
+            peer_id: sender_peer_id.clone(),
+            roots: vec![],
+            hash_get: false,
+        };
+
+        let event = encode_signaling_event(
+            &sender_keys,
+            &sender_peer_id,
+            &msg,
+            Kind::Ephemeral(NOSTR_KIND_HASHTREE),
+        )
+        .expect("encode hello");
+
+        let hash_get_tag = event
+            .tags
+            .iter()
+            .find_map(|tag| {
+                let values = tag.as_slice();
+                (values.first().map(|value| value.as_str()) == Some("hashGet"))
+                    .then(|| values.get(1).cloned())
+                    .flatten()
+            })
+            .expect("hashGet tag");
+        assert_eq!(hash_get_tag, "0");
+
+        let decoded = decode_signaling_event(
+            &event,
+            "receiver",
+            "receiver-pubkey",
+            &Keys::generate(),
+        )
+        .expect("decode hello");
+
+        match decoded {
+            SignalingMessage::Hello {
+                peer_id, hash_get, ..
+            } => {
+                assert_eq!(peer_id, sender_peer_id);
+                assert!(!hash_get);
+            }
+            other => panic!("expected hello, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hello_decode_defaults_hash_get_to_true_when_tag_missing() {
+        let sender_keys = Keys::generate();
+        let sender_peer_id = sender_keys.public_key().to_hex();
+        let event = EventBuilder::new(
+            Kind::Ephemeral(NOSTR_KIND_HASHTREE),
+            "",
+            vec![
+                Tag::custom(
+                    nostr_sdk::TagKind::SingleLetter(nostr_sdk::SingleLetterTag::lowercase(
+                        nostr_sdk::Alphabet::L,
+                    )),
+                    vec![HELLO_TAG.to_string()],
+                ),
+                Tag::custom(
+                    nostr_sdk::TagKind::Custom(std::borrow::Cow::Borrowed("peerId")),
+                    vec![sender_peer_id.clone()],
+                ),
+                Tag::expiration(Timestamp::now() + Duration::from_secs(300)),
+            ],
+        )
+        .to_event(&sender_keys)
+        .expect("build hello event");
+
+        let decoded = decode_signaling_event(
+            &event,
+            "receiver",
+            "receiver-pubkey",
+            &Keys::generate(),
+        )
+        .expect("decode hello");
+
+        match decoded {
+            SignalingMessage::Hello { hash_get, .. } => assert!(hash_get),
+            other => panic!("expected hello, got {:?}", other),
         }
     }
 

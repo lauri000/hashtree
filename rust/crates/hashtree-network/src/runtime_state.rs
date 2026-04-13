@@ -14,6 +14,7 @@ use crate::runtime_peer::MeshPeerEntry;
 pub struct MeshRuntimeState<P> {
     pub peers: Arc<RwLock<HashMap<String, MeshPeerEntry<P>>>>,
     pub connected_count: Arc<AtomicUsize>,
+    peer_hash_get: Arc<RwLock<HashMap<String, bool>>>,
     pub bytes_sent: AtomicU64,
     pub bytes_received: AtomicU64,
     pub mesh_received: AtomicU64,
@@ -39,6 +40,7 @@ where
         Self {
             peers: Arc::new(RwLock::new(HashMap::new())),
             connected_count: Arc::new(AtomicUsize::new(0)),
+            peer_hash_get: Arc::new(RwLock::new(HashMap::new())),
             bytes_sent: AtomicU64::new(0),
             bytes_received: AtomicU64::new(0),
             mesh_received: AtomicU64::new(0),
@@ -56,6 +58,30 @@ where
         self.local_buses.write().await.push(bus);
     }
 
+    pub async fn set_peer_hash_get(&self, peer_id: &str, enabled: bool) {
+        self.peer_hash_get
+            .write()
+            .await
+            .insert(peer_id.to_string(), enabled);
+    }
+
+    pub async fn clear_peer_hash_get(&self, peer_id: &str) {
+        self.peer_hash_get.write().await.remove(peer_id);
+    }
+
+    pub async fn peer_hash_get_enabled(&self, peer_id: &str) -> bool {
+        self.peer_hash_get
+            .read()
+            .await
+            .get(peer_id)
+            .copied()
+            .unwrap_or(true)
+    }
+
+    pub async fn peer_hash_get_snapshot(&self) -> HashMap<String, bool> {
+        self.peer_hash_get.read().await.clone()
+    }
+
     pub async fn local_buses(&self) -> Vec<SharedLocalNostrBus> {
         self.local_buses.read().await.clone()
     }
@@ -66,6 +92,7 @@ where
             let mut peers = self.peers.write().await;
             std::mem::take(&mut *peers)
         };
+        self.peer_hash_get.write().await.clear();
         self.connected_count.store(0, Ordering::Relaxed);
         for entry in peers.into_values() {
             if let Some(peer) = entry.peer {

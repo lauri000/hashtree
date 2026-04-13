@@ -104,6 +104,61 @@ async fn relay_stores_and_serves_events() -> Result<()> {
 }
 
 #[tokio::test]
+async fn relay_does_not_persist_ephemeral_events() -> Result<()> {
+    let tmp = TempDir::new()?;
+    let graph_store = {
+        let _guard = crate::socialgraph::test_lock();
+        crate::socialgraph::open_social_graph_store_with_mapsize(
+            tmp.path(),
+            Some(128 * 1024 * 1024),
+        )?
+    };
+    let keys = Keys::generate();
+    let backend: Arc<dyn crate::socialgraph::SocialGraphBackend> = graph_store.clone();
+    let access = Arc::new(crate::socialgraph::SocialGraphAccessControl::new(
+        Arc::clone(&backend),
+        0,
+        HashSet::from([keys.public_key().to_hex()]),
+    ));
+
+    let relay = NostrRelay::new(
+        Arc::clone(&backend),
+        tmp.path().to_path_buf(),
+        HashSet::from([keys.public_key().to_hex()]),
+        Some(access.clone()),
+        NostrRelayConfig {
+            spambox_db_max_bytes: 0,
+            ..Default::default()
+        },
+    )?;
+
+    let event = EventBuilder::new(Kind::Ephemeral(25050), "", []).to_event(&keys)?;
+    relay.ingest_trusted_event(event.clone()).await?;
+
+    let filter = Filter::new()
+        .authors(vec![event.pubkey])
+        .kinds(vec![event.kind]);
+
+    let reloaded = NostrRelay::new(
+        Arc::clone(&backend),
+        tmp.path().to_path_buf(),
+        HashSet::from([keys.public_key().to_hex()]),
+        Some(access),
+        NostrRelayConfig {
+            spambox_db_max_bytes: 0,
+            ..Default::default()
+        },
+    )?;
+
+    assert!(
+        reloaded.query_events(&filter, 10).await.is_empty(),
+        "ephemeral events should stay in memory only"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn relay_persists_bluetooth_received_event_records() -> Result<()> {
     let tmp = TempDir::new()?;
     let graph_store = {

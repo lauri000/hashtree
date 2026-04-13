@@ -274,6 +274,10 @@ impl EmbeddedBackgroundServicesController {
         Self::shutdown_mirror(&mut runtime.mirror).await;
         Self::shutdown_sync(&mut runtime.sync).await;
 
+        if !config.server.mode.background_services_enabled() {
+            return Ok(runtime.status());
+        }
+
         let active_relays = config.nostr.active_relays();
 
         if config.nostr.enabled
@@ -438,13 +442,20 @@ impl EmbeddedPeerRouterController {
         }
 
         let webrtc_config = crate::p2p_common::default_webrtc_config(config);
-        let mut manager = WebRTCManager::new_with_state_and_store_and_classifier(
-            self.keys.clone(),
-            webrtc_config,
-            self.state.clone(),
-            self.store.clone(),
-            self.peer_classifier.clone(),
-        );
+        let mut manager = if config.server.mode.hash_get_enabled() {
+            WebRTCManager::new_with_state_and_store_and_classifier(
+                self.keys.clone(),
+                webrtc_config,
+                self.state.clone(),
+                self.store.clone(),
+                self.peer_classifier.clone(),
+            )
+        } else {
+            let mut manager =
+                WebRTCManager::new_with_state(self.keys.clone(), webrtc_config, self.state.clone());
+            manager.set_peer_classifier(self.peer_classifier.clone());
+            manager
+        };
         manager
             .set_nostr_relay(self.nostr_relay.clone() as hashtree_network::SharedMeshRelayClient);
         let shutdown = manager.shutdown_signal();
@@ -733,6 +744,8 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     let active_nostr_relays = config.nostr.active_relays();
 
     let mut server = HashtreeServer::new(Arc::clone(&store), opts.bind_address.clone())
+        .with_server_mode(config.server.mode)
+        .with_hash_get_enabled(config.server.mode.hash_get_enabled())
         .with_allowed_pubkeys(allowed_pubkeys.clone())
         .with_max_upload_bytes((config.blossom.max_upload_mb as usize) * 1024 * 1024)
         .with_public_writes(config.server.public_writes)

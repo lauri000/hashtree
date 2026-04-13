@@ -70,6 +70,7 @@ pub type PeerEntry = SharedPeerEntry<MeshPeer>;
 pub struct WebRTCConfig {
     pub relays: Vec<String>,
     pub signaling_enabled: bool,
+    pub hash_get_enabled: bool,
     pub max_outbound: usize,
     pub max_inbound: usize,
     pub hello_interval_ms: u64,
@@ -95,6 +96,7 @@ impl Default for WebRTCConfig {
                 "wss://relay.snort.social".to_string(),
             ],
             signaling_enabled: true,
+            hash_get_enabled: true,
             max_outbound: 6,
             max_inbound: 6,
             hello_interval_ms: 3000,
@@ -534,12 +536,20 @@ impl WebRTCState {
     ) -> Option<(Vec<u8>, String)> {
         use crate::BLOB_REQUEST_POLICY;
 
+        let peer_hash_get = self.runtime.peer_hash_get_snapshot().await;
         let peers = self.runtime.peers.read().await;
 
         let peer_refs: Vec<_> = peers
             .values()
             .filter(|p| p.state == ConnectionState::Connected && p.peer.is_some())
             .filter_map(|p| {
+                if !peer_hash_get
+                    .get(&p.peer_id.to_string())
+                    .copied()
+                    .unwrap_or(true)
+                {
+                    return None;
+                }
                 p.peer
                     .clone()
                     .map(|peer| (p.peer_id.to_string(), peer, p.transport))

@@ -194,6 +194,8 @@ impl WsRelayState {
 pub struct AppState {
     pub store: Arc<HashtreeStore>,
     pub auth: Option<AuthCredentials>,
+    pub peer_mode: crate::config::ServerMode,
+    pub hash_get_enabled: bool,
     /// WebRTC peer state for forwarding requests to connected P2P peers
     pub webrtc_peers: Option<Arc<WebRTCState>>,
     /// WebSocket relay state for /ws clients

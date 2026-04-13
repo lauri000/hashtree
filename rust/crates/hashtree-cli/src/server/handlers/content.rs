@@ -2,6 +2,10 @@ use super::*;
 use crate::webrtc::WebRTCState;
 
 pub(super) async fn fetch_and_cache_blob(state: &AppState, hash: &[u8]) -> bool {
+    if !state.hash_get_enabled {
+        return false;
+    }
+
     let hash_hex = hex::encode(hash);
     tracing::info!(
         "[htree-fetch] Trying to fetch blob {} from upstream",
@@ -15,24 +19,26 @@ pub(super) async fn fetch_and_cache_blob(state: &AppState, hash: &[u8]) -> bool 
 
     let mut fetches: Vec<BoxFuture<'static, Option<FetchResult>>> = Vec::new();
 
-    if let Some(ref webrtc_state) = state.webrtc_peers {
-        tracing::info!(
-            "[htree-fetch] Querying mesh peers for {}",
-            &hash_hex[..16.min(hash_hex.len())]
-        );
-        let webrtc_state = webrtc_state.clone();
-        let peer_hash_hex = hash_hex.clone();
-        fetches.push(
-            async move {
-                let query_hash_hex = peer_hash_hex.clone();
-                await_fetch_task("webrtc", &peer_hash_hex, async move {
-                    query_webrtc_peers(&webrtc_state, &query_hash_hex).await
-                })
-                .await
-                .map(|(data, peer_id)| FetchResult::WebRtc { data, peer_id })
-            }
-            .boxed(),
-        );
+    if state.hash_get_enabled {
+        if let Some(ref webrtc_state) = state.webrtc_peers {
+            tracing::info!(
+                "[htree-fetch] Querying mesh peers for {}",
+                &hash_hex[..16.min(hash_hex.len())]
+            );
+            let webrtc_state = webrtc_state.clone();
+            let peer_hash_hex = hash_hex.clone();
+            fetches.push(
+                async move {
+                    let query_hash_hex = peer_hash_hex.clone();
+                    await_fetch_task("webrtc", &peer_hash_hex, async move {
+                        query_webrtc_peers(&webrtc_state, &query_hash_hex).await
+                    })
+                    .await
+                    .map(|(data, peer_id)| FetchResult::WebRtc { data, peer_id })
+                }
+                .boxed(),
+            );
+        }
     }
 
     if !state.upstream_blossom.is_empty() {

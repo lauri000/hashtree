@@ -1051,7 +1051,7 @@ pub async fn serve_content_or_blob(
     // Try raw blob lookup first (for hashtree chunks / git objects)
     // This takes priority over file tree serving to avoid returning reassembled
     // file content when the caller expects raw chunk data
-    if is_sha256 {
+    if is_sha256 && state.hash_get_enabled {
         let hash_hex = hash_part.to_lowercase();
         if let Ok(hash_bytes) = from_hex(&hash_hex) {
             if let Ok(Some(data)) = state.store.get_blob(&hash_bytes) {
@@ -1075,7 +1075,7 @@ pub async fn serve_content_or_blob(
     }
 
     // Not found locally - try querying connected WebRTC peers
-    if is_sha256 {
+    if is_sha256 && state.hash_get_enabled {
         let hash_hex = hash_part.to_lowercase();
 
         // Try WebRTC peers first
@@ -1092,8 +1092,12 @@ pub async fn serve_content_or_blob(
                     tracing::warn!("Failed to cache peer data: {}", e);
                 }
 
-                return build_blob_response(data, BlobSource::WebRtcPeer { peer_id }, is_localhost)
-                    .into_response();
+                return build_blob_response(
+                    data,
+                    BlobSource::WebRtcPeer { peer_id },
+                    is_localhost,
+                )
+                .into_response();
             }
         }
 

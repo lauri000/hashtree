@@ -165,6 +165,7 @@ impl WebRTCManager {
                 self.config.debug,
             );
             router.set_classifier(classifier_tx);
+            router.set_hash_get_enabled(self.config.hash_get_enabled);
             self.shared_router = Some(Arc::new(router));
         }
 
@@ -622,6 +623,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_from_peers_with_source_skips_peers_with_hash_get_disabled() {
+        let state = WebRTCState::new();
+        let capable_data = b"hash-get-capable".to_vec();
+        let capable_hash_hex = hex::encode(hashtree_core::sha256(&capable_data));
+
+        state.runtime.peers.write().await.insert(
+            "peer-assist".to_string(),
+            PeerEntry {
+                peer_id: PeerId::new("peer-assist-pub".to_string()),
+                direction: PeerDirection::Outbound,
+                state: ConnectionState::Connected,
+                last_seen: Instant::now(),
+                peer: Some(MeshPeer::mock_for_tests(TestMeshPeer::with_response(Some(
+                    b"assist-should-not-be-queried".to_vec(),
+                )))),
+                pool: PeerPool::Other,
+                transport: PeerTransport::Bluetooth,
+                signal_paths: BTreeSet::from([PeerSignalPath::Bluetooth]),
+                bytes_sent: 0,
+                bytes_received: 0,
+            },
+        );
+        state
+            .runtime
+            .set_peer_hash_get("peer-assist-pub", false)
+            .await;
+
+        state.runtime.peers.write().await.insert(
+            "peer-capable".to_string(),
+            PeerEntry {
+                peer_id: PeerId::new("peer-capable-pub".to_string()),
+                direction: PeerDirection::Outbound,
+                state: ConnectionState::Connected,
+                last_seen: Instant::now(),
+                peer: Some(MeshPeer::mock_for_tests(TestMeshPeer::with_response(Some(
+                    capable_data.clone(),
+                )))),
+                pool: PeerPool::Other,
+                transport: PeerTransport::Bluetooth,
+                signal_paths: BTreeSet::from([PeerSignalPath::Bluetooth]),
+                bytes_sent: 0,
+                bytes_received: 0,
+            },
+        );
+        state
+            .runtime
+            .set_peer_hash_get("peer-capable-pub", true)
+            .await;
+
+        let resolved = state
+            .request_from_peers_with_source(&capable_hash_hex)
+            .await
+            .expect("expected capable peer response");
+
+        assert_eq!(resolved.0, capable_data);
+        assert_eq!(resolved.1, "peer-capable-pub");
+    }
+
+    #[tokio::test]
     async fn dispatch_signaling_message_is_noop_when_signaling_disabled() {
         let keys = Keys::generate();
         let mut config = WebRTCConfig::default();
@@ -653,6 +713,7 @@ mod tests {
                 SignalingMessage::Hello {
                     peer_id: manager.my_peer_id.to_string(),
                     roots: Vec::new(),
+                    hash_get: true,
                 },
                 None,
             )

@@ -5,9 +5,11 @@ use axum::{
     response::{IntoResponse, Json},
 };
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::webrtc::{ConnectionState, PeerEntry, PeerTransport, WebRTCState};
+#[cfg(feature = "p2p")]
+use hashtree_network::MeshSession;
 
 #[derive(Default)]
 struct MeshSnapshot {
@@ -42,7 +44,7 @@ fn peer_transport_visible(entry: &PeerEntry, bluetooth_enabled: bool) -> bool {
     bluetooth_enabled || entry.transport != PeerTransport::Bluetooth
 }
 
-fn peer_entry_json(id: &str, entry: &PeerEntry) -> Value {
+fn peer_entry_json(id: &str, entry: &PeerEntry, hash_get_enabled: bool) -> Value {
     let rtc_state = peer_transport_debug_state(entry);
     let signal_paths: Vec<_> = entry
         .signal_paths
@@ -61,6 +63,9 @@ fn peer_entry_json(id: &str, entry: &PeerEntry) -> Value {
         "signal_paths": signal_paths,
         "connected": entry.state == ConnectionState::Connected,
         "has_data_channel": entry.peer.as_ref().map(|peer| peer.is_ready()).unwrap_or(false),
+        "capabilities": {
+            "hash_get": hash_get_enabled,
+        },
         "bytes_sent": entry.bytes_sent,
         "bytes_received": entry.bytes_received,
     })
@@ -79,7 +84,18 @@ fn peer_transport_debug_state(_entry: &PeerEntry) -> Option<String> {
     None
 }
 
+#[cfg(feature = "p2p")]
+async fn peer_hash_get_snapshot(webrtc_state: &Arc<WebRTCState>) -> HashMap<String, bool> {
+    webrtc_state.runtime.peer_hash_get_snapshot().await
+}
+
+#[cfg(not(feature = "p2p"))]
+async fn peer_hash_get_snapshot(_webrtc_state: &Arc<WebRTCState>) -> HashMap<String, bool> {
+    HashMap::new()
+}
+
 async fn capture_mesh_snapshot(webrtc_state: &Arc<WebRTCState>) -> MeshSnapshot {
+    let peer_hash_get = peer_hash_get_snapshot(webrtc_state).await;
     #[cfg(feature = "p2p")]
     let peers = webrtc_state.runtime.peers.read().await;
     #[cfg(not(feature = "p2p"))]
@@ -92,7 +108,14 @@ async fn capture_mesh_snapshot(webrtc_state: &Arc<WebRTCState>) -> MeshSnapshot 
             continue;
         }
 
-        snapshot.peers.push(peer_entry_json(id, entry));
+        snapshot.peers.push(peer_entry_json(
+            id,
+            entry,
+            peer_hash_get
+                .get(&entry.peer_id.to_string())
+                .copied()
+                .unwrap_or(true),
+        ));
         if entry.state == ConnectionState::Connected {
             snapshot.connected += 1;
             if entry
@@ -200,6 +223,10 @@ pub(super) async fn daemon_status(
 
     Json(json!({
         "status": "running",
+        "mode": state.peer_mode.as_str(),
+        "capabilities": {
+            "hash_get": state.hash_get_enabled,
+        },
         "mesh": mesh.clone(),
         "webrtc": mesh,
         "relay": relay,

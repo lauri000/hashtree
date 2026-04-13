@@ -42,6 +42,7 @@ pub fn default_webrtc_config(config: &Config) -> WebRTCConfig {
     WebRTCConfig {
         relays,
         signaling_enabled: config.server.enable_webrtc,
+        hash_get_enabled: config.server.mode.hash_get_enabled(),
         stun_servers,
         multicast: MulticastConfig {
             enabled: config.server.enable_multicast,

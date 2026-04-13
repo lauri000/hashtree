@@ -21,8 +21,36 @@ pub struct Config {
     pub cashu: CashuConfig,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServerMode {
+    #[default]
+    Normal,
+    #[serde(alias = "signal-only")]
+    Assist,
+}
+
+impl ServerMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Assist => "assist",
+        }
+    }
+
+    pub const fn hash_get_enabled(self) -> bool {
+        matches!(self, Self::Normal)
+    }
+
+    pub const fn background_services_enabled(self) -> bool {
+        matches!(self, Self::Normal)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
+    #[serde(default)]
+    pub mode: ServerMode,
     #[serde(default = "default_bind_address")]
     pub bind_address: String,
     #[serde(default = "default_enable_auth")]
@@ -499,6 +527,7 @@ fn default_max_size_gb() -> u64 {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
+            mode: ServerMode::default(),
             bind_address: default_bind_address(),
             enable_auth: default_enable_auth(),
             stun_port: default_stun_port(),

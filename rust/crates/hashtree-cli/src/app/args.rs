@@ -128,6 +128,22 @@ impl Cli {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum StartMode {
+    Normal,
+    #[value(alias = "signal-only")]
+    Assist,
+}
+
+impl From<StartMode> for hashtree_cli::config::ServerMode {
+    fn from(value: StartMode) -> Self {
+        match value {
+            StartMode::Normal => Self::Normal,
+            StartMode::Assist => Self::Assist,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 pub(crate) enum Commands {
     // ── Daemon ──────────────────────────────────────────────
@@ -138,6 +154,9 @@ pub(crate) enum Commands {
         /// Override Nostr relays (comma-separated)
         #[arg(long)]
         relays: Option<String>,
+        /// Override daemon mode (`normal` or `assist`)
+        #[arg(long, value_enum)]
+        mode: Option<StartMode>,
         /// Run in background (daemonize)
         #[arg(long)]
         daemon: bool,

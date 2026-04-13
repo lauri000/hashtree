@@ -95,6 +95,8 @@ fn test_app_state(store: Arc<HashtreeStore>, upstream_blossom: Vec<String>) -> A
     AppState {
         store,
         auth: None,
+        peer_mode: crate::config::ServerMode::Normal,
+        hash_get_enabled: true,
         webrtc_peers: None,
         ws_relay: Arc::new(crate::server::auth::WsRelayState::new()),
         max_upload_bytes: 5 * 1024 * 1024,
@@ -244,11 +246,37 @@ async fn daemon_status_exposes_mesh_alias_with_transport_metadata() {
     assert_eq!(json["mesh"]["bytes_sent"], 16);
     assert_eq!(json["mesh"]["bytes_received"], 32);
     assert_eq!(json["mesh"]["peers"][0]["transport"], "webrtc");
+    assert_eq!(json["mesh"]["peers"][0]["capabilities"]["hash_get"], true);
     assert_eq!(json["webrtc"], json["mesh"]);
     assert_eq!(json["relay"]["enabled"], true);
     assert_eq!(json["relay"]["bytes_sent"], 512);
     assert_eq!(json["relay"]["bytes_received"], 1024);
     assert_eq!(json["upstream"]["nostr_relays"], 2);
+    assert_eq!(json["mode"], "normal");
+    assert_eq!(json["capabilities"]["hash_get"], true);
+}
+
+#[tokio::test]
+async fn daemon_status_reports_assist_mode_and_disabled_hash_get() {
+    let temp = TempDir::new().unwrap();
+    let store = Arc::new(HashtreeStore::new(temp.path()).unwrap());
+    let mut state = test_app_state(store, vec![]);
+    state.peer_mode = crate::config::ServerMode::Assist;
+    state.hash_get_enabled = false;
+
+    let response = daemon_status(
+        AxumState(state),
+        axum::extract::ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 21417))),
+    )
+    .await
+    .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["mode"], "assist");
+    assert_eq!(json["capabilities"]["hash_get"], false);
 }
 
 #[tokio::test]

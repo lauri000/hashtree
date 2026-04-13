@@ -65,6 +65,7 @@ export const DEFAULT_RELAYS = [
 // Directed messages use #p tag with gift wrap
 const SIGNALING_KIND = 25050;
 const HELLO_TAG = 'hello';
+const HASH_GET_TAG = 'hashGet';
 const SEEN_FRAME_CAP = 4096;
 const SEEN_FRAME_TTL_MS = 120_000;
 const SEEN_EVENT_CAP = 8192;
@@ -78,6 +79,11 @@ const DEFAULT_REQUEST_DISPATCH: RequestDispatchConfig = {
   hedgeIntervalMs: 120,
 };
 
+function decodeHashGetTag(value: string | undefined): boolean {
+  if (value === undefined) return true;
+  return !['0', 'false', 'FALSE', 'no', 'NO'].includes(value);
+}
+
 
 // Pending request with callbacks
 interface PendingReq {
@@ -90,6 +96,7 @@ interface PendingReq {
 interface PeerInfo {
   peer: Peer;
   pool: PeerPool;
+  hashGet: boolean;
 }
 
 interface InFlightPeerRequest {
@@ -516,7 +523,8 @@ export class WebRTCStore implements Store {
     const lTag = event.tags.find(t => t[0] === 'l')?.[1];
     if (lTag === HELLO_TAG) {
       if (event.tags.some((tag) => tag[0] === 'peerId' && typeof tag[1] === 'string')) {
-        await this.handleHello(event.pubkey);
+        const hashGet = decodeHashGetTag(event.tags.find((tag) => tag[0] === HASH_GET_TAG)?.[1]);
+        await this.handleHello(event.pubkey, hashGet);
       }
       return;
     }
@@ -566,7 +574,7 @@ export class WebRTCStore implements Store {
     }
   }
 
-  private async handleHello(senderPubkey: string): Promise<void> {
+  private async handleHello(senderPubkey: string, hashGet: boolean): Promise<void> {
     const peerId = new PeerId(senderPubkey);
 
     // Skip self
@@ -581,7 +589,9 @@ export class WebRTCStore implements Store {
     }
 
     // Check if we already have this peer
-    if (this.peers.has(peerId.toString())) {
+    const existing = this.peers.get(peerId.toString());
+    if (existing) {
+      existing.hashGet = hashGet;
       return;
     }
 
@@ -611,7 +621,7 @@ export class WebRTCStore implements Store {
       this.pendingOtherPubkeys.add(senderPubkey);
     }
     try {
-      await this.connectToPeer(peerId, pool);
+      await this.connectToPeer(peerId, pool, hashGet);
     } finally {
       this.pendingOtherPubkeys.delete(senderPubkey);
     }
@@ -651,6 +661,7 @@ export class WebRTCStore implements Store {
 
     // Clean up existing connection if any
     const existing = this.peers.get(peerIdStr);
+    const hashGet = existing?.hashGet ?? true;
     if (existing) {
       this.peerSelector.removePeer(peerIdStr);
       existing.peer.close();
@@ -676,14 +687,14 @@ export class WebRTCStore implements Store {
       debug: this.config.debug,
     });
 
-    this.peers.set(peerIdStr, { peer, pool });
+    this.peers.set(peerIdStr, { peer, pool, hashGet });
     this.peerSelector.addPeer(peerIdStr);
     // Clear pending now that peer is in the map
     this.pendingOtherPubkeys.delete(peerId.pubkey);
     await peer.handleSignaling(msg);
   }
 
-  private async connectToPeer(peerId: PeerId, pool: PeerPool): Promise<void> {
+  private async connectToPeer(peerId: PeerId, pool: PeerPool, hashGet = true): Promise<void> {
     const peerIdStr = peerId.toString();
 
     if (this.peers.has(peerIdStr)) {
@@ -711,7 +722,7 @@ export class WebRTCStore implements Store {
       debug: this.config.debug,
     });
 
-    this.peers.set(peerIdStr, { peer, pool });
+    this.peers.set(peerIdStr, { peer, pool, hashGet });
     this.peerSelector.addPeer(peerIdStr);
     await peer.connect();
   }
@@ -725,7 +736,7 @@ export class WebRTCStore implements Store {
 
   private orderedConnectedPeers(excludePeerId?: string): Peer[] {
     const connectedAll = Array.from(this.peers.values())
-      .filter(({ peer }) => peer.isConnected);
+      .filter(({ peer, hashGet }) => peer.isConnected && hashGet);
     if (connectedAll.length === 0) return [];
 
     const currentPeerIds = connectedAll.map(({ peer }) => peer.peerId);
@@ -1006,6 +1017,7 @@ export class WebRTCStore implements Store {
       const tags = [
         ['l', HELLO_TAG],
         ['peerId', msg.peerId],
+        [HASH_GET_TAG, msg.type === 'hello' && msg.hashGet === false ? '0' : '1'],
         ['expiration', expiration.toString()],
       ];
 
@@ -1044,6 +1056,7 @@ export class WebRTCStore implements Store {
     void this.dispatchSignaling({
       type: 'hello',
       peerId: this.myPeerId.toString(),
+      hashGet: true,
     });
   }
 
@@ -1077,7 +1090,7 @@ export class WebRTCStore implements Store {
    * Get all peer statuses
    */
   getPeers(): PeerStatus[] {
-    return Array.from(this.peers.values()).map(({ peer, pool }) => ({
+    return Array.from(this.peers.values()).map(({ peer, pool, hashGet }) => ({
       peerId: peer.peerId,
       pubkey: peer.pubkey,
       state: peer.state,
@@ -1086,6 +1099,7 @@ export class WebRTCStore implements Store {
       isSelf: peer.pubkey === this.myPeerId.pubkey,
       pool,
       isConnected: peer.isConnected, // Includes data channel state
+      hashGet,
     }));
   }
 

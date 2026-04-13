@@ -14,6 +14,19 @@ pub(crate) fn format_daemon_status(status: &serde_json::Value, include_header: b
     }
     let status_text = status["status"].as_str().unwrap_or("unknown");
     lines.push(format!("  Status: {}", status_text));
+    if let Some(mode) = status.get("mode").and_then(|value| value.as_str()) {
+        lines.push(format!("  Mode: {}", mode));
+    }
+    if let Some(hash_get) = status
+        .get("capabilities")
+        .and_then(|value| value.get("hash_get"))
+        .and_then(|value| value.as_bool())
+    {
+        lines.push(format!(
+            "  Hash Get: {}",
+            if hash_get { "enabled" } else { "disabled" }
+        ));
+    }
 
     if let Some(storage) = status.get("storage") {
         lines.push(String::new());
@@ -86,6 +99,7 @@ fn default_daemon_pid_file() -> PathBuf {
 pub(crate) fn build_daemon_args(
     addr: &str,
     relays: Option<&str>,
+    mode: Option<hashtree_cli::config::ServerMode>,
     data_dir: Option<&PathBuf>,
 ) -> Vec<std::ffi::OsString> {
     let mut args = Vec::new();
@@ -94,6 +108,10 @@ pub(crate) fn build_daemon_args(
     if let Some(relays) = relays {
         args.push(std::ffi::OsString::from("--relays"));
         args.push(std::ffi::OsString::from(relays));
+    }
+    if let Some(mode) = mode {
+        args.push(std::ffi::OsString::from("--mode"));
+        args.push(std::ffi::OsString::from(mode.as_str()));
     }
     if let Some(data_dir) = data_dir {
         args.push(std::ffi::OsString::from("--data-dir"));
@@ -105,6 +123,7 @@ pub(crate) fn build_daemon_args(
 pub(crate) fn spawn_daemon(
     addr: &str,
     relays: Option<&str>,
+    mode: Option<hashtree_cli::config::ServerMode>,
     data_dir: Option<PathBuf>,
     log_file: Option<&PathBuf>,
     pid_file: Option<&PathBuf>,
@@ -147,7 +166,7 @@ pub(crate) fn spawn_daemon(
         let exe = std::env::current_exe().context("Failed to locate htree binary")?;
         let mut cmd = Command::new(exe);
         cmd.arg("start")
-            .args(build_daemon_args(addr, relays, data_dir.as_ref()))
+            .args(build_daemon_args(addr, relays, mode, data_dir.as_ref()))
             .env("HTREE_DAEMONIZED", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
@@ -175,6 +194,7 @@ pub(crate) fn spawn_daemon(
     {
         let _ = addr;
         let _ = relays;
+        let _ = mode;
         let _ = data_dir;
         let _ = log_file;
         let _ = pid_file;

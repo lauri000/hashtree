@@ -26,6 +26,7 @@ describe('WebRTCController idle signaling', () => {
       sendCommand: () => {},
       sendSignaling: async (msg) => {
         if (msg.type === 'hello') {
+          expect(msg.hashGet).toBe(true);
           helloCount += 1;
         }
       },

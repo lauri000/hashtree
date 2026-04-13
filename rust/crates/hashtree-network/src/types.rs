@@ -13,6 +13,10 @@ use std::time::{Duration, Instant};
 use crate::mesh_store_core::RequestDispatchConfig;
 use crate::peer_selector::SelectionStrategy;
 
+fn default_hash_get_enabled() -> bool {
+    true
+}
+
 /// Unique identifier for a peer in the network
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PeerId {
@@ -64,6 +68,8 @@ pub enum SignalingMessage {
         #[serde(rename = "peerId")]
         peer_id: String,
         roots: Vec<String>,
+        #[serde(rename = "hashGet", default = "default_hash_get_enabled")]
+        hash_get: bool,
     },
 
     /// Negotiation offer payload (currently SDP for WebRTC links).

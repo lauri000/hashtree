@@ -155,6 +155,7 @@ pub(crate) async fn run() -> Result<()> {
         Commands::Start {
             addr,
             relays: relays_override,
+            mode: mode_override,
             daemon,
             log_file,
             pid_file,
@@ -163,6 +164,7 @@ pub(crate) async fn run() -> Result<()> {
                 spawn_daemon(
                     &addr,
                     relays_override.as_deref(),
+                    mode_override.map(Into::into),
                     cli.data_dir.clone(),
                     log_file.as_ref(),
                     pid_file.as_ref(),
@@ -180,6 +182,10 @@ pub(crate) async fn run() -> Result<()> {
                     .map(|s| s.trim().to_string())
                     .collect();
                 println!("Using relays from CLI: {:?}", config.nostr.relays);
+            }
+            if let Some(mode) = mode_override {
+                config.server.mode = mode.into();
+                println!("Using mode from CLI: {}", config.server.mode.as_str());
             }
 
             // Use CLI data_dir if provided, otherwise use config's data_dir
@@ -363,15 +369,23 @@ pub(crate) async fn run() -> Result<()> {
                         None
                     };
 
-                    let mut manager = WebRTCManager::new_with_store_and_classifier_and_cashu(
-                        keys.clone(),
-                        webrtc_config,
-                        Arc::clone(&store) as Arc<dyn hashtree_cli::ContentStore>,
-                        peer_classifier,
-                        hashtree_cli::webrtc::CashuRoutingConfig::from(&config.cashu),
-                        cashu_payment_client,
-                        cashu_mint_metadata,
-                    );
+                    let mut manager = if config.server.mode.hash_get_enabled() {
+                        WebRTCManager::new_with_store_and_classifier_and_cashu(
+                            keys.clone(),
+                            webrtc_config,
+                            Arc::clone(&store) as Arc<dyn hashtree_cli::ContentStore>,
+                            peer_classifier,
+                            hashtree_cli::webrtc::CashuRoutingConfig::from(&config.cashu),
+                            cashu_payment_client,
+                            cashu_mint_metadata,
+                        )
+                    } else {
+                        let manager =
+                            WebRTCManager::new_with_classifier(keys.clone(), webrtc_config, peer_classifier);
+                        let _ = cashu_payment_client;
+                        let _ = cashu_mint_metadata;
+                        manager
+                    };
                     manager.set_nostr_relay(
                         nostr_relay.clone() as hashtree_network::SharedMeshRelayClient
                     );
@@ -406,6 +420,8 @@ pub(crate) async fn run() -> Result<()> {
 
             // Set up server with allowed pubkeys for blossom write access
             let mut server = HashtreeServer::new(Arc::clone(&store), addr.clone())
+                .with_server_mode(config.server.mode)
+                .with_hash_get_enabled(config.server.mode.hash_get_enabled())
                 .with_allowed_pubkeys(allowed_pubkeys.clone())
                 .with_max_upload_bytes((config.blossom.max_upload_mb as usize) * 1024 * 1024)
                 .with_public_writes(config.server.public_writes)
@@ -446,6 +462,15 @@ pub(crate) async fn run() -> Result<()> {
             } else {
                 println!("Identity: {}", npub);
             }
+            println!("Mode: {}", config.server.mode.as_str());
+            println!(
+                "Hash Get: {}",
+                if config.server.mode.hash_get_enabled() {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
             if !config.nostr.allowed_npubs.is_empty() {
                 println!(
                     "Allowed writers: {} npubs",

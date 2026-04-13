@@ -7,6 +7,7 @@ interface ControllerPeer {
   peerId: string;
   dataChannelReady: boolean;
   state: 'connecting' | 'connected' | 'disconnected';
+  hashGet: boolean;
 }
 
 interface ControllerPrivateApi {
@@ -118,6 +119,32 @@ describe('WebRTCController routing', () => {
 
     await vi.advanceTimersByTimeAsync(0);
     expect(sentData[0]?.peerId).toBe(followed.peerId);
+
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(pending).resolves.toBeNull();
+  });
+
+  it('skips peers that advertise hash_get as disabled', async () => {
+    vi.useFakeTimers();
+    const { controller, internal, sentData } = createRoutingController({
+      requestDispatch: {
+        initialFanout: 2,
+        hedgeFanout: 1,
+        maxFanout: 2,
+        hedgeIntervalMs: 100,
+      },
+    });
+
+    const assistPeer = connectPeer(internal, 'peer-assist', 'pub-assist');
+    assistPeer.hashGet = false;
+    connectPeer(internal, 'peer-capable', 'pub-capable');
+
+    const hash = await sha256(new TextEncoder().encode('skip-assist'));
+    const pending = controller.get(hash);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sentData).toHaveLength(1);
+    expect(sentData[0]?.peerId).toBe('peer-capable');
 
     await vi.advanceTimersByTimeAsync(500);
     await expect(pending).resolves.toBeNull();

@@ -49,6 +49,8 @@ pub struct MeshRouter<R: SignalingTransport, F: PeerLinkFactory> {
     classifier_tx: Option<tokio::sync::mpsc::Sender<ClassifyRequest>>,
     /// Debug mode
     debug: bool,
+    /// Whether local node accepts `hash_get` lookups.
+    hash_get_enabled: bool,
 }
 
 impl<R: SignalingTransport + 'static, F: PeerLinkFactory + 'static> MeshRouter<R, F> {
@@ -70,12 +72,17 @@ impl<R: SignalingTransport + 'static, F: PeerLinkFactory + 'static> MeshRouter<R
             peer_roots: RwLock::new(HashMap::new()),
             classifier_tx: None,
             debug,
+            hash_get_enabled: true,
         }
     }
 
     /// Set classifier for peer pool assignment
     pub fn set_classifier(&mut self, tx: tokio::sync::mpsc::Sender<ClassifyRequest>) {
         self.classifier_tx = Some(tx);
+    }
+
+    pub fn set_hash_get_enabled(&mut self, enabled: bool) {
+        self.hash_get_enabled = enabled;
     }
 
     /// Get our peer ID
@@ -88,6 +95,7 @@ impl<R: SignalingTransport + 'static, F: PeerLinkFactory + 'static> MeshRouter<R
         let msg = SignalingMessage::Hello {
             peer_id: self.peer_id.clone(),
             roots,
+            hash_get: self.hash_get_enabled,
         };
         self.transport.publish(msg).await
     }
@@ -144,7 +152,9 @@ impl<R: SignalingTransport + 'static, F: PeerLinkFactory + 'static> MeshRouter<R
     /// This is the core signaling logic shared between production and simulation.
     pub async fn handle_message(&self, msg: SignalingMessage) -> Result<(), TransportError> {
         match &msg {
-            SignalingMessage::Hello { peer_id, roots } => self.handle_hello(peer_id, roots).await,
+            SignalingMessage::Hello { peer_id, roots, .. } => {
+                self.handle_hello(peer_id, roots).await
+            }
             SignalingMessage::Offer {
                 peer_id,
                 target_peer_id,

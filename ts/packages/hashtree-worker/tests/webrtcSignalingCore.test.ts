@@ -38,7 +38,7 @@ describe('p2p signaling core', () => {
     const giftWrap = vi.fn();
     const nowMs = 1700000000000;
 
-    const message: SignalingMessage = { type: 'hello', peerId: 'f'.repeat(64) };
+    const message: SignalingMessage = { type: 'hello', peerId: 'f'.repeat(64), hashGet: false };
     await sendSignalingMessage({
       msg: message,
       signEvent,
@@ -54,6 +54,7 @@ describe('p2p signaling core', () => {
     expect(published).toHaveLength(1);
     expect(published[0]?.tags).toContainEqual(['l', HELLO_TAG]);
     expect(published[0]?.tags).toContainEqual(['peerId', 'f'.repeat(64)]);
+    expect(published[0]?.tags).toContainEqual(['hashGet', '0']);
   });
 
   it('sends directed signaling via giftWrap + publish', async () => {
@@ -110,6 +111,35 @@ describe('p2p signaling core', () => {
       message: {
         type: 'hello',
         peerId: 'sender-pubkey',
+        hashGet: true,
+      },
+    });
+  });
+
+  it('decodes hello hashGet capability from tags', async () => {
+    const helloEvent: SignalingEventLike = {
+      pubkey: 'sender-pubkey',
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        ['l', HELLO_TAG],
+        ['peerId', 'sender-pubkey'],
+        ['hashGet', '0'],
+      ],
+      content: '',
+    };
+
+    const decoded = await decodeSignalingEvent({
+      event: helloEvent,
+      giftUnwrap: async () => null,
+      nowMs: () => Date.now(),
+    });
+
+    expect(decoded).toEqual({
+      senderPubkey: 'sender-pubkey',
+      message: {
+        type: 'hello',
+        peerId: 'sender-pubkey',
+        hashGet: false,
       },
     });
   });

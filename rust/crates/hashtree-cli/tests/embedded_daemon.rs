@@ -252,6 +252,46 @@ async fn embedded_daemon_accepts_ws_route_with_trailing_slash() {
 }
 
 #[tokio::test]
+async fn embedded_daemon_reports_assist_mode_in_status() {
+    let dir = TempDir::new().expect("temp dir");
+    let _lock = env_lock().lock().expect("env lock");
+    let _config_env = EnvVarGuard::set("HTREE_CONFIG_DIR", dir.path());
+    let _data_env = EnvVarGuard::set("HTREE_DATA_DIR", dir.path());
+
+    let data_dir = dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+    let mut config = hashtree_cli::Config::default();
+    config.storage.data_dir = data_dir.to_string_lossy().to_string();
+    config.server.enable_auth = false;
+    config.server.enable_webrtc = false;
+    config.server.stun_port = 0;
+    config.server.mode = hashtree_cli::config::ServerMode::Assist;
+
+    let info = hashtree_cli::daemon::start_embedded(hashtree_cli::daemon::EmbeddedDaemonOptions {
+        config,
+        data_dir: data_dir.clone(),
+        config_dir: Some(dir.path().to_path_buf()),
+        bind_address: "127.0.0.1:0".to_string(),
+        relays: None,
+        extra_routes: None,
+        cors: None,
+    })
+    .await
+    .expect("start embedded daemon");
+
+    let status: Value = reqwest::get(format!("http://127.0.0.1:{}/api/status", info.port))
+        .await
+        .expect("fetch daemon status")
+        .json()
+        .await
+        .expect("parse daemon status json");
+
+    assert_eq!(status["mode"], "assist");
+    assert_eq!(status["capabilities"]["hash_get"], false);
+}
+
+#[tokio::test]
 async fn embedded_daemon_background_services_follow_live_relay_settings() {
     let dir = TempDir::new().expect("temp dir");
     let _lock = env_lock().lock().expect("env lock");

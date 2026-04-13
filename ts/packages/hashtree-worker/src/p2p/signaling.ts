@@ -96,6 +96,11 @@ function normalizePeerEndpoint(value: string, senderPubkey: string): string {
   return trimmed.includes(':') ? senderPubkey : trimmed;
 }
 
+function decodeHashGetTag(value: string | undefined): boolean {
+  if (value === undefined) return true;
+  return !['0', 'false', 'FALSE', 'no', 'NO'].includes(value);
+}
+
 function normalizeSignalingMessage(raw: unknown, senderPubkey: string): SignalingMessage | null {
   if (!raw || typeof raw !== 'object' || !('type' in raw)) return null;
   const msg = raw as Record<string, unknown>;
@@ -105,6 +110,7 @@ function normalizeSignalingMessage(raw: unknown, senderPubkey: string): Signalin
     return {
       ...(msg as unknown as Extract<SignalingMessage, { type: 'hello' }>),
       peerId: senderPubkey,
+      hashGet: msg.hashGet !== false,
     };
   }
 
@@ -230,6 +236,7 @@ export async function sendSignalingMessage<TEvent extends SignalingEventLike>({
     tags: [
       ['l', HELLO_TAG],
       ['peerId', msg.peerId],
+      ['hashGet', msg.type === 'hello' && msg.hashGet === false ? '0' : '1'],
       ['expiration', String(createdAt + HELLO_EXPIRATION_SEC)],
     ],
     content: '',
@@ -261,6 +268,7 @@ export async function decodeSignalingEvent<TEvent extends SignalingEventLike>({
       message: {
         type: 'hello',
         peerId: senderPeerId,
+        hashGet: decodeHashGetTag(event.tags.find((tag) => tag[0] === 'hashGet')?.[1]),
       },
     };
   }

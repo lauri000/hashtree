@@ -1211,6 +1211,8 @@ mod tests {
         Ok(AppState {
             store,
             auth: None,
+            peer_mode: crate::config::ServerMode::Normal,
+            hash_get_enabled: true,
             webrtc_peers: None,
             ws_relay: Arc::new(super::super::auth::WsRelayState::new()),
             max_upload_bytes: 5 * 1024 * 1024,
