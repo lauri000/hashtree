@@ -3,6 +3,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
+use nostr::nips::nip19::ToBech32;
 use nostr::{JsonUtil, RelayMessage as NostrRelayMessage};
 use serde_json::Value;
 use tempfile::TempDir;
@@ -55,6 +56,7 @@ async fn embedded_daemon_serves_htree_test() {
     let info = hashtree_cli::daemon::start_embedded(hashtree_cli::daemon::EmbeddedDaemonOptions {
         config,
         data_dir: data_dir.clone(),
+        config_dir: Some(dir.path().to_path_buf()),
         bind_address: "127.0.0.1:0".to_string(),
         relays: None,
         extra_routes: None,
@@ -79,6 +81,60 @@ async fn embedded_daemon_serves_htree_test() {
 }
 
 #[tokio::test]
+async fn embedded_daemon_respects_explicit_config_dir_without_env() {
+    let dir = TempDir::new().expect("temp dir");
+    let config_dir = dir.path().join("config");
+    let data_dir = dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+    let mut config = hashtree_cli::Config::default();
+    config.storage.data_dir = data_dir.to_string_lossy().to_string();
+    config.server.enable_auth = false;
+    config.server.enable_webrtc = false;
+    config.server.stun_port = 0;
+
+    let info = hashtree_cli::daemon::start_embedded(hashtree_cli::daemon::EmbeddedDaemonOptions {
+        config,
+        data_dir: data_dir.clone(),
+        config_dir: Some(config_dir.clone()),
+        bind_address: "127.0.0.1:0".to_string(),
+        relays: None,
+        extra_routes: None,
+        cors: None,
+    })
+    .await
+    .expect("start embedded daemon");
+
+    let keys = hashtree_cli::config::read_keys_in(&config_dir).expect("read generated keys");
+    assert!(
+        config_dir.join("keys").exists(),
+        "expected embedded daemon to write keys into explicit config dir"
+    );
+    assert_eq!(
+        info.npub,
+        keys.public_key().to_bech32().expect("encode npub"),
+        "embedded daemon should report the identity stored in the explicit config dir"
+    );
+
+    let base = format!("http://127.0.0.1:{}", info.port);
+    info.daemon_controller.shutdown().await;
+
+    let mut stopped = false;
+    for _ in 0..10 {
+        if reqwest::get(format!("{}/htree/test", base)).await.is_err() {
+            stopped = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    assert!(
+        stopped,
+        "expected daemon controller shutdown to stop HTTP serving"
+    );
+}
+
+#[tokio::test]
 async fn embedded_daemon_uses_default_blossom_servers_when_config_is_empty() {
     let dir = TempDir::new().expect("temp dir");
     let _lock = env_lock().lock().expect("env lock");
@@ -100,6 +156,7 @@ async fn embedded_daemon_uses_default_blossom_servers_when_config_is_empty() {
     let info = hashtree_cli::daemon::start_embedded(hashtree_cli::daemon::EmbeddedDaemonOptions {
         config,
         data_dir: data_dir.clone(),
+        config_dir: Some(dir.path().to_path_buf()),
         bind_address: "127.0.0.1:0".to_string(),
         relays: None,
         extra_routes: None,
@@ -148,6 +205,7 @@ async fn embedded_daemon_accepts_ws_route_with_trailing_slash() {
     let info = hashtree_cli::daemon::start_embedded(hashtree_cli::daemon::EmbeddedDaemonOptions {
         config,
         data_dir: data_dir.clone(),
+        config_dir: Some(dir.path().to_path_buf()),
         bind_address: "127.0.0.1:0".to_string(),
         relays: None,
         extra_routes: None,
@@ -222,6 +280,7 @@ async fn embedded_daemon_background_services_follow_live_relay_settings() {
     let info = hashtree_cli::daemon::start_embedded(hashtree_cli::daemon::EmbeddedDaemonOptions {
         config: config.clone(),
         data_dir: data_dir.clone(),
+        config_dir: Some(dir.path().to_path_buf()),
         bind_address: "127.0.0.1:0".to_string(),
         relays: None,
         extra_routes: None,
@@ -318,6 +377,7 @@ async fn embedded_daemon_exposes_live_peer_router_controller() {
     let info = hashtree_cli::daemon::start_embedded(hashtree_cli::daemon::EmbeddedDaemonOptions {
         config: config.clone(),
         data_dir: data_dir.clone(),
+        config_dir: Some(dir.path().to_path_buf()),
         bind_address: "127.0.0.1:0".to_string(),
         relays: None,
         extra_routes: None,
@@ -384,6 +444,7 @@ async fn embedded_daemon_peer_router_starts_for_bluetooth_only() {
     let info = hashtree_cli::daemon::start_embedded(hashtree_cli::daemon::EmbeddedDaemonOptions {
         config: config.clone(),
         data_dir: data_dir.clone(),
+        config_dir: Some(dir.path().to_path_buf()),
         bind_address: "127.0.0.1:0".to_string(),
         relays: None,
         extra_routes: None,

@@ -7,11 +7,11 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use tower_http::cors::CorsLayer;
 
-use crate::config::{ensure_keys, parse_npub, pubkey_bytes, Config};
+use crate::config::{ensure_keys, ensure_keys_in, parse_npub, pubkey_bytes, Config};
 use crate::eviction::{spawn_background_eviction_task, BACKGROUND_EVICTION_INTERVAL};
 use crate::nostr_relay::{NostrRelay, NostrRelayConfig};
 use crate::server::{AppState, HashtreeServer};
@@ -83,6 +83,47 @@ impl BackgroundServicesRuntime {
             crawler_active: self.crawler.is_some(),
             mirror_active: self.mirror.is_some(),
             sync_active: self.sync.is_some(),
+        }
+    }
+}
+
+struct EmbeddedServerRuntime {
+    shutdown: Arc<Notify>,
+    join: Option<JoinHandle<()>>,
+}
+
+pub struct EmbeddedServerController {
+    runtime: Mutex<Option<EmbeddedServerRuntime>>,
+}
+
+impl EmbeddedServerController {
+    pub fn new(shutdown: Arc<Notify>, join: JoinHandle<()>) -> Self {
+        Self {
+            runtime: Mutex::new(Some(EmbeddedServerRuntime {
+                shutdown,
+                join: Some(join),
+            })),
+        }
+    }
+
+    pub async fn shutdown(&self) {
+        let mut runtime = self.runtime.lock().await;
+        let Some(mut runtime) = runtime.take() else {
+            return;
+        };
+
+        runtime.shutdown.notify_waiters();
+        if let Some(mut join) = runtime.join.take() {
+            match tokio::time::timeout(std::time::Duration::from_secs(3), &mut join).await {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    tracing::warn!("Embedded server task ended with join error: {}", err)
+                }
+                Err(_) => {
+                    tracing::warn!("Timed out waiting for embedded server shutdown");
+                    join.abort();
+                }
+            }
         }
     }
 }
@@ -415,11 +456,77 @@ impl EmbeddedPeerRouterController {
         *runtime = Some(PeerRouterRuntime { shutdown, join });
         Ok(true)
     }
+
+    pub async fn shutdown(&self) {
+        let mut runtime = self.runtime.lock().await;
+        let Some(runtime_handle) = runtime.take() else {
+            return;
+        };
+
+        let _ = runtime_handle.shutdown.send(true);
+        let mut join = runtime_handle.join;
+        match tokio::time::timeout(std::time::Duration::from_secs(3), &mut join).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::warn!("Peer router task ended with join error: {}", err),
+            Err(_) => {
+                tracing::warn!("Timed out waiting for peer router shutdown");
+                join.abort();
+            }
+        }
+
+        self.state.reset_runtime_state().await;
+    }
+}
+
+pub struct EmbeddedDaemonController {
+    server_controller: Arc<EmbeddedServerController>,
+    #[cfg(feature = "p2p")]
+    peer_router_controller: Option<Arc<EmbeddedPeerRouterController>>,
+    background_services_controller: Option<Arc<EmbeddedBackgroundServicesController>>,
+}
+
+impl EmbeddedDaemonController {
+    #[cfg(feature = "p2p")]
+    pub fn new(
+        server_controller: Arc<EmbeddedServerController>,
+        peer_router_controller: Option<Arc<EmbeddedPeerRouterController>>,
+        background_services_controller: Option<Arc<EmbeddedBackgroundServicesController>>,
+    ) -> Self {
+        Self {
+            server_controller,
+            #[cfg(feature = "p2p")]
+            peer_router_controller,
+            background_services_controller,
+        }
+    }
+
+    #[cfg(not(feature = "p2p"))]
+    pub fn new(
+        server_controller: Arc<EmbeddedServerController>,
+        background_services_controller: Option<Arc<EmbeddedBackgroundServicesController>>,
+    ) -> Self {
+        Self {
+            server_controller,
+            background_services_controller,
+        }
+    }
+
+    pub async fn shutdown(&self) {
+        self.server_controller.shutdown().await;
+        if let Some(controller) = self.background_services_controller.as_ref() {
+            controller.shutdown().await;
+        }
+        #[cfg(feature = "p2p")]
+        if let Some(controller) = self.peer_router_controller.as_ref() {
+            controller.shutdown().await;
+        }
+    }
 }
 
 pub struct EmbeddedDaemonOptions {
     pub config: Config,
     pub data_dir: PathBuf,
+    pub config_dir: Option<PathBuf>,
     pub bind_address: String,
     pub relays: Option<Vec<String>>,
     pub extra_routes: Option<Router<AppState>>,
@@ -431,6 +538,7 @@ pub struct EmbeddedDaemonInfo {
     pub port: u16,
     pub npub: String,
     pub store: Arc<HashtreeStore>,
+    pub daemon_controller: Arc<EmbeddedDaemonController>,
     #[allow(dead_code)]
     pub webrtc_state: Option<Arc<WebRTCState>>,
     #[cfg(feature = "p2p")]
@@ -465,7 +573,11 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         max_size_bytes,
     )?);
 
-    let (keys, _was_generated) = ensure_keys()?;
+    let (keys, _was_generated) = if let Some(config_dir) = opts.config_dir.as_ref() {
+        ensure_keys_in(config_dir, Some(&opts.data_dir), Some(&config))?
+    } else {
+        ensure_keys()?
+    };
     let pk_bytes = pubkey_bytes(&keys);
     let npub = keys
         .public_key()
@@ -655,11 +767,30 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
     let local_addr = listener.local_addr()?;
     let actual_addr = format!("{}:{}", local_addr.ip(), local_addr.port());
 
-    tokio::spawn(async move {
-        if let Err(e) = server.run_with_listener(listener).await {
+    let server_shutdown = Arc::new(Notify::new());
+    let server_shutdown_for_task = Arc::clone(&server_shutdown);
+    let server_join = tokio::spawn(async move {
+        if let Err(e) = server
+            .run_with_listener_until(listener, async move {
+                server_shutdown_for_task.notified().await;
+            })
+            .await
+        {
             tracing::error!("Embedded daemon server error: {}", e);
         }
     });
+    let server_controller = Arc::new(EmbeddedServerController::new(server_shutdown, server_join));
+    #[cfg(feature = "p2p")]
+    let daemon_controller = Arc::new(EmbeddedDaemonController::new(
+        server_controller,
+        peer_router_controller.clone(),
+        Some(background_services_controller.clone()),
+    ));
+    #[cfg(not(feature = "p2p"))]
+    let daemon_controller = Arc::new(EmbeddedDaemonController::new(
+        server_controller,
+        Some(background_services_controller.clone()),
+    ));
 
     tracing::info!(
         "Embedded daemon started on {}, identity {}",
@@ -672,6 +803,7 @@ pub async fn start_embedded(opts: EmbeddedDaemonOptions) -> Result<EmbeddedDaemo
         port: local_addr.port(),
         npub,
         store,
+        daemon_controller,
         webrtc_state,
         #[cfg(feature = "p2p")]
         peer_router_controller,

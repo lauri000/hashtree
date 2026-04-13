@@ -21,6 +21,7 @@ use axum::{
     Router,
 };
 use std::collections::{HashMap, HashSet};
+use std::future;
 use std::sync::{Arc, OnceLock, RwLock};
 use tower_http::cors::CorsLayer;
 
@@ -214,6 +215,18 @@ impl HashtreeServer {
     }
 
     pub async fn run_with_listener(self, listener: tokio::net::TcpListener) -> Result<u16> {
+        self.run_with_listener_until(listener, future::pending::<()>())
+            .await
+    }
+
+    pub async fn run_with_listener_until<F>(
+        self,
+        listener: tokio::net::TcpListener,
+        shutdown: F,
+    ) -> Result<u16>
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
         let local_addr = listener.local_addr()?;
 
         // Public endpoints (no auth required)
@@ -320,6 +333,7 @@ impl HashtreeServer {
             listener,
             app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
         )
+        .with_graceful_shutdown(shutdown)
         .await?;
 
         Ok(local_addr.port())

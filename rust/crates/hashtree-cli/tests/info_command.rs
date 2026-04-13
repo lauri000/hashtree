@@ -134,6 +134,7 @@ async fn info_fetches_missing_hash_via_local_daemon() {
         hashtree_cli::daemon::start_embedded(hashtree_cli::daemon::EmbeddedDaemonOptions {
             config: daemon_config,
             data_dir: daemon_data_dir.clone(),
+            config_dir: Some(config_dir.clone()),
             bind_address: "127.0.0.1:0".to_string(),
             relays: None,
             extra_routes: None,

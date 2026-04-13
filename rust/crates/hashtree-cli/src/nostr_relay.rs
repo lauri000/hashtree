@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, Mutex};
 
+#[cfg(feature = "p2p")]
 use hashtree_network::{MeshEventStore, MeshRelayClient};
 use nostr::{ClientMessage as NostrClientMessage, JsonUtil, RelayMessage as NostrRelayMessage};
 use nostr::{Event, EventId, Filter as NostrFilter, SubscriptionId};
@@ -912,6 +913,7 @@ mod imp {
 
 pub use imp::NostrRelay;
 
+#[cfg(feature = "p2p")]
 #[async_trait::async_trait]
 impl MeshEventStore for NostrRelay {
     async fn ingest_trusted_event(&self, event: Event) -> anyhow::Result<()> {
@@ -923,6 +925,7 @@ impl MeshEventStore for NostrRelay {
     }
 }
 
+#[cfg(feature = "p2p")]
 #[async_trait::async_trait]
 impl MeshRelayClient for NostrRelay {
     fn next_client_id(&self) -> u64 {

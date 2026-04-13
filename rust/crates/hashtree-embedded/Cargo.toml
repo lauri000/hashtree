@@ -1,0 +1,18 @@
+[package]
+name = "hashtree-embedded"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Embedded Hashtree daemon runtime for native hosts"
+
+[dependencies]
+anyhow.workspace = true
+hashtree-cli = { version = "0.2.33", path = "../hashtree-cli", default-features = false, features = ["lmdb"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+tempfile.workspace = true

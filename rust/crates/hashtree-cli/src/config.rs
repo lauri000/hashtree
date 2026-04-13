@@ -3,6 +3,7 @@ use nostr::nips::nip19::{FromBech32, ToBech32};
 use nostr::{Keys, SecretKey};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::path::Path;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -606,6 +607,45 @@ impl Config {
 // Re-export path functions from hashtree_config
 pub use hashtree_config::{get_auth_cookie_path, get_config_path, get_hashtree_dir, get_keys_path};
 
+fn read_keys_from_path(keys_path: &Path) -> Result<Keys> {
+    let content = fs::read_to_string(keys_path).context("Failed to read keys file")?;
+    let entries = hashtree_config::parse_keys_file(&content);
+    let nsec_str = entries
+        .into_iter()
+        .next()
+        .map(|e| e.secret)
+        .context("Keys file is empty")?;
+    let secret_key = SecretKey::from_bech32(&nsec_str).context("Invalid nsec format")?;
+    Ok(Keys::new(secret_key))
+}
+
+fn seed_identity_defaults_if_needed(data_dir: Option<&Path>, config: Option<&Config>) {
+    if let (Some(data_dir), Some(config)) = (data_dir, config) {
+        let _ = crate::bootstrap::seed_identity_defaults(data_dir, config);
+    }
+}
+
+fn write_keys_to_path(keys_path: &Path, keys: &Keys) -> Result<()> {
+    if let Some(parent) = keys_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let nsec = keys
+        .secret_key()
+        .to_bech32()
+        .context("Failed to encode nsec")?;
+    fs::write(keys_path, &nsec)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::Permissions::from_mode(0o600);
+        fs::set_permissions(keys_path, perms)?;
+    }
+
+    Ok(())
+}
+
 /// Generate and save auth cookie if it doesn't exist
 pub fn ensure_auth_cookie() -> Result<(String, String)> {
     let cookie_path = get_auth_cookie_path();
@@ -633,43 +673,60 @@ pub fn read_auth_cookie() -> Result<(String, String)> {
 /// Ensure keys file exists, generating one if not present
 /// Returns (Keys, was_generated)
 pub fn ensure_keys() -> Result<(Keys, bool)> {
-    let keys_path = get_keys_path();
+    let config_dir = get_hashtree_dir();
+    let config = Config::load().ok();
+    let data_dir = config
+        .as_ref()
+        .map(|cfg| Path::new(cfg.storage.data_dir.as_str()));
+    ensure_keys_in(&config_dir, data_dir, config.as_ref())
+}
+
+/// Ensure keys exist inside an explicit config directory.
+/// Returns (Keys, was_generated)
+pub fn ensure_keys_in(
+    config_dir: &Path,
+    data_dir: Option<&Path>,
+    config: Option<&Config>,
+) -> Result<(Keys, bool)> {
+    let keys_path = config_dir.join("keys");
 
     if keys_path.exists() {
-        let content = fs::read_to_string(&keys_path).context("Failed to read keys file")?;
-        let entries = hashtree_config::parse_keys_file(&content);
-        let nsec_str = entries
-            .into_iter()
-            .next()
-            .map(|e| e.secret)
-            .context("Keys file is empty")?;
-        let secret_key = SecretKey::from_bech32(&nsec_str).context("Invalid nsec format")?;
-        let keys = Keys::new(secret_key);
-        Ok((keys, false))
+        Ok((read_keys_from_path(&keys_path)?, false))
     } else {
-        let keys = generate_keys()?;
+        let keys = generate_keys_in(config_dir, data_dir, config)?;
         Ok((keys, true))
     }
 }
 
 /// Read existing keys
 pub fn read_keys() -> Result<Keys> {
-    let keys_path = get_keys_path();
-    let content = fs::read_to_string(&keys_path).context("Failed to read keys file")?;
-    let entries = hashtree_config::parse_keys_file(&content);
-    let nsec_str = entries
-        .into_iter()
-        .next()
-        .map(|e| e.secret)
-        .context("Keys file is empty")?;
-    let secret_key = SecretKey::from_bech32(&nsec_str).context("Invalid nsec format")?;
-    Ok(Keys::new(secret_key))
+    read_keys_in(&get_hashtree_dir())
+}
+
+/// Read keys from an explicit config directory.
+pub fn read_keys_in(config_dir: &Path) -> Result<Keys> {
+    read_keys_from_path(&config_dir.join("keys"))
 }
 
 /// Get nsec string, ensuring keys file exists (generate if needed)
 /// Returns (nsec_string, was_generated)
 pub fn ensure_keys_string() -> Result<(String, bool)> {
-    let keys_path = get_keys_path();
+    let config_dir = get_hashtree_dir();
+    let config = Config::load().ok();
+    let data_dir = config
+        .as_ref()
+        .map(|cfg| Path::new(cfg.storage.data_dir.as_str()));
+    ensure_keys_string_in(&config_dir, data_dir, config.as_ref())
+}
+
+/// Ensure key material exists inside an explicit config directory.
+/// Returns (nsec_string, was_generated)
+pub fn ensure_keys_string_in(
+    config_dir: &Path,
+    data_dir: Option<&Path>,
+    config: Option<&Config>,
+) -> Result<(String, bool)> {
+    let keys_path = config_dir.join("keys");
 
     if keys_path.exists() {
         let content = fs::read_to_string(&keys_path).context("Failed to read keys file")?;
@@ -681,7 +738,7 @@ pub fn ensure_keys_string() -> Result<(String, bool)> {
             .context("Keys file is empty")?;
         Ok((nsec_str, false))
     } else {
-        let keys = generate_keys()?;
+        let keys = generate_keys_in(config_dir, data_dir, config)?;
         let nsec = keys
             .secret_key()
             .to_bech32()
@@ -692,36 +749,24 @@ pub fn ensure_keys_string() -> Result<(String, bool)> {
 
 /// Generate new keys and save to file
 pub fn generate_keys() -> Result<Keys> {
-    let keys_path = get_keys_path();
+    let config_dir = get_hashtree_dir();
+    let config = Config::load().ok();
+    let data_dir = config
+        .as_ref()
+        .map(|cfg| Path::new(cfg.storage.data_dir.as_str()));
+    generate_keys_in(&config_dir, data_dir, config.as_ref())
+}
 
-    // Ensure parent directory exists
-    if let Some(parent) = keys_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    // Generate new keys
+/// Generate new keys in an explicit config directory and optionally seed
+/// identity defaults into a caller-owned data directory.
+pub fn generate_keys_in(
+    config_dir: &Path,
+    data_dir: Option<&Path>,
+    config: Option<&Config>,
+) -> Result<Keys> {
     let keys = Keys::generate();
-    let nsec = keys
-        .secret_key()
-        .to_bech32()
-        .context("Failed to encode nsec")?;
-
-    // Save to file
-    fs::write(&keys_path, &nsec)?;
-
-    // Set permissions to 0600 (owner read/write only)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = fs::Permissions::from_mode(0o600);
-        fs::set_permissions(&keys_path, perms)?;
-    }
-
-    if let Ok(config) = Config::load() {
-        let data_dir = std::path::PathBuf::from(&config.storage.data_dir);
-        let _ = crate::bootstrap::seed_identity_defaults(&data_dir, &config);
-    }
-
+    write_keys_to_path(&config_dir.join("keys"), &keys)?;
+    seed_identity_defaults_if_needed(data_dir, config);
     Ok(keys)
 }
 

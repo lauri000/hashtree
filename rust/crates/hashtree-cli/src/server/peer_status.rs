@@ -4,7 +4,6 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json},
 };
-use hashtree_network::MeshSession;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -44,10 +43,7 @@ fn peer_transport_visible(entry: &PeerEntry, bluetooth_enabled: bool) -> bool {
 }
 
 fn peer_entry_json(id: &str, entry: &PeerEntry) -> Value {
-    let rtc_state = entry
-        .peer
-        .as_ref()
-        .and_then(|peer| peer.transport_debug_state());
+    let rtc_state = peer_transport_debug_state(entry);
     let signal_paths: Vec<_> = entry
         .signal_paths
         .iter()
@@ -70,8 +66,24 @@ fn peer_entry_json(id: &str, entry: &PeerEntry) -> Value {
     })
 }
 
+#[cfg(feature = "p2p")]
+fn peer_transport_debug_state(entry: &PeerEntry) -> Option<String> {
+    entry
+        .peer
+        .as_ref()
+        .and_then(|peer| peer.transport_debug_state())
+}
+
+#[cfg(not(feature = "p2p"))]
+fn peer_transport_debug_state(_entry: &PeerEntry) -> Option<String> {
+    None
+}
+
 async fn capture_mesh_snapshot(webrtc_state: &Arc<WebRTCState>) -> MeshSnapshot {
+    #[cfg(feature = "p2p")]
     let peers = webrtc_state.runtime.peers.read().await;
+    #[cfg(not(feature = "p2p"))]
+    let peers = webrtc_state.peers.read().await;
     let bluetooth_enabled = bluetooth_transport_enabled();
     let mut snapshot = MeshSnapshot::default();
 
